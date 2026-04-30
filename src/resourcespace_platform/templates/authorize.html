@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sign in to ResourceSpace</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Atkinson+Hyperlegible+Next:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --rs-navy: #1e293b;
+        --rs-deep-navy: #1f293f;
+        --rs-midnight: #1a1e33;
+        --rs-lime: #cef373;
+        --rs-link: #0a91c9;
+        --rs-text: #000000;
+        --rs-muted: #51607a;
+        --rs-border: #d7e0ec;
+        --rs-soft-bg: #f5f7fb;
+        --rs-error-bg: #fff0ed;
+        --rs-error-text: #8b3216;
+      }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        padding: 24px 20px;
+        background: var(--rs-soft-bg);
+        color: var(--rs-text);
+        font-family: "Atkinson Hyperlegible Next", "Space Grotesk", sans-serif;
+        font-size: 16px;
+        line-height: 1.5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .card {
+        width: 100%;
+        max-width: 460px;
+        background: #ffffff;
+        border: 1px solid var(--rs-border);
+        border-radius: 16px;
+        padding: 28px 28px 24px;
+        box-shadow: 0 20px 40px rgba(12, 31, 63, 0.08);
+      }
+      .logo {
+        display: block;
+        width: 196px;
+        height: 34px;
+        margin: 0 0 20px;
+        background-image: url("https://www.resourcespace.com/img/ResourceSpace-Logo-Blue-2025.svg");
+        background-repeat: no-repeat;
+        background-size: contain;
+        background-position: left center;
+      }
+      h1 {
+        font-family: "Space Grotesk", sans-serif;
+        font-size: 24px;
+        font-weight: 600;
+        line-height: 1.2;
+        letter-spacing: -0.5px;
+        color: var(--rs-deep-navy);
+        margin: 0 0 8px;
+      }
+      p.lead {
+        margin: 0 0 18px;
+        color: var(--rs-muted);
+        font-size: 15px;
+        line-height: 1.55;
+      }
+      label {
+        display: block;
+        margin: 14px 0 6px;
+        font-weight: 600;
+        color: var(--rs-deep-navy);
+        font-size: 14px;
+      }
+      input[type="url"],
+      input[type="text"],
+      input[type="password"] {
+        width: 100%;
+        border: 1px solid var(--rs-border);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 15px;
+        background: #ffffff;
+        color: var(--rs-text);
+        font-family: inherit;
+        transition: border-color 120ms ease, box-shadow 120ms ease;
+      }
+      input:focus {
+        outline: none;
+        border-color: var(--rs-link);
+        box-shadow: 0 0 0 3px rgba(10, 145, 201, 0.2);
+      }
+      button {
+        margin-top: 20px;
+        width: 100%;
+        border: 0;
+        border-radius: 8px;
+        padding: 12px 18px;
+        background: var(--rs-navy);
+        color: #ffffff;
+        font-family: "Atkinson Hyperlegible Next", "Space Grotesk", sans-serif;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 120ms ease;
+      }
+      button:hover { background: var(--rs-midnight); }
+      button:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(10, 145, 201, 0.45);
+      }
+      .error {
+        margin: 16px 0 0;
+        padding: 12px 14px;
+        border-radius: 8px;
+        background: var(--rs-error-bg);
+        color: var(--rs-error-text);
+        font-size: 14px;
+      }
+      .privacy {
+        margin: 16px 0 0;
+        font-size: 13px;
+        line-height: 1.5;
+        color: var(--rs-muted);
+      }
+      .footer {
+        margin-top: 20px;
+        padding-top: 14px;
+        border-top: 1px solid var(--rs-border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--rs-muted);
+      }
+      .footer a {
+        color: var(--rs-link);
+        text-decoration: none;
+      }
+      .footer a:hover { text-decoration: underline; }
+      .meta {
+        margin: 12px 0 0;
+        font-size: 13px;
+        color: var(--rs-muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card" role="main">
+      <span class="logo" role="img" aria-label="ResourceSpace"></span>
+      <h1>Sign in to ResourceSpace</h1>
+      <p class="lead">
+        Connect your ResourceSpace tenant so you can browse its collections
+        and save Canva designs back to it.
+      </p>
+      {% if manual_test_mode %}
+      <p class="meta">
+        Manual test mode is active. Submitting this form will show the
+        issued token and session details instead of returning to Canva.
+      </p>
+      {% endif %}
+      {% if error_code %}
+      <p class="error" role="alert">
+        We couldn&rsquo;t complete sign-in: <strong>{{ error_code }}</strong>
+      </p>
+      {% endif %}
+      <form method="post" action="/oauth/authorise" autocomplete="on">
+        {% for name, value in hidden_fields %}
+        <input type="hidden" name="{{ name }}" value="{{ value }}" />
+        {% endfor %}
+        <label for="tenant_url">ResourceSpace URL</label>
+        <input
+          id="tenant_url"
+          name="tenant_url"
+          type="url"
+          required
+          placeholder="https://your-tenant.resourcespace.com"
+          value="{{ tenant_url }}"
+          autocomplete="url"
+          spellcheck="false"
+          autocapitalize="off"
+        />
+        <label for="username">Username</label>
+        <input
+          id="username"
+          name="username"
+          type="text"
+          required
+          autocomplete="username"
+          value="{{ username }}"
+          spellcheck="false"
+          autocapitalize="off"
+        />
+        <label for="password">Password</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          required
+          autocomplete="current-password"
+        />
+        <button type="submit">Sign in</button>
+      </form>
+      <p class="privacy">
+        Your credentials are sent only to the ResourceSpace tenant at the
+        URL above to create a sign-in session. Canva never sees them.
+      </p>
+      <div class="footer">
+        <span>Powered by ResourceSpace</span>
+        <a href="https://www.resourcespace.com/" target="_blank" rel="noopener">resourcespace.com</a>
+      </div>
+    </main>
+    <script>
+      (function () {
+        // Best-effort popup sizing: if this page is opened as a popup
+        // (e.g. Canva's OAuth flow), resize the window to fit the form
+        // so users don't have to scroll. Browsers only honour this on
+        // windows opened via script — it's a no-op elsewhere.
+        try {
+          var card = document.querySelector(".card");
+          if (!card || !window.opener) return;
+          var rect = card.getBoundingClientRect();
+          var targetWidth = Math.min(540, Math.round(rect.width) + 80);
+          var targetHeight = Math.min(820, Math.round(rect.height) + 80);
+          window.resizeTo(targetWidth, targetHeight);
+        } catch (e) {
+          /* ignore */
+        }
+        var urlField = document.getElementById("tenant_url");
+        if (urlField && !urlField.value) urlField.focus();
+        else {
+          var userField = document.getElementById("username");
+          if (userField && !userField.value) userField.focus();
+          else {
+            var pwField = document.getElementById("password");
+            if (pwField) pwField.focus();
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>

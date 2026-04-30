@@ -1,0 +1,28 @@
+name: Platform CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Import-time sanity check
+        run: python -c "from resourcespace_platform.main import create_app; create_app()"
+
+      - name: Run tests
+        run: pytest

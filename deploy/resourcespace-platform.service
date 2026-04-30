@@ -1,0 +1,26 @@
+[Unit]
+Description=ResourceSpace Canva Platform Broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=resourcespace-platform
+Group=resourcespace-platform
+WorkingDirectory=/opt/resourcespace-platform
+EnvironmentFile=/etc/resourcespace-platform/broker.env
+ExecStart=/opt/resourcespace-platform/.venv/bin/python -m resourcespace_platform.main
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/resourcespace-platform
+StateDirectory=resourcespace-platform
+
+[Install]
+WantedBy=multi-user.target
