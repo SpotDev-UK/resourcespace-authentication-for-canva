@@ -70,11 +70,18 @@ def _should_use_manual_test_mode(config: AppConfig, values: dict[str, str]) -> b
     return not any(values.get(key) for key in required_keys)
 
 
-def _is_redirect_uri_allowed(config: AppConfig, redirect_uri: str) -> bool:
+def _is_oauth_client_allowed(config: AppConfig, client_id: str) -> bool:
+    return client_id in config.oauth.clients
+
+
+def _is_redirect_uri_allowed(config: AppConfig, client_id: str, redirect_uri: str) -> bool:
     """Production deploys must enumerate redirect URIs Canva is configured to use.
     In dev/test the allowlist may be empty; we accept anything in that case so
     local fixtures and the manual helper still work."""
-    allowlist = config.oauth.redirect_uri_allowlist
+    client = config.oauth.clients.get(client_id)
+    if not client:
+        return False
+    allowlist = client.redirect_uri_allowlist
     if not allowlist:
         return _manual_test_mode_enabled(config)
     return redirect_uri in allowlist
@@ -176,9 +183,9 @@ async def oauth_authorize_post(request: Request) -> Response:
 
     if response_type != "code" or not client_id or not redirect_uri or not state:
         return json_error(config, 400, "INVALID_REQUEST", "Missing OAuth parameters.")
-    if client_id != config.oauth.client_id:
+    if not _is_oauth_client_allowed(config, client_id):
         return json_error(config, 400, "INVALID_CLIENT", "Unknown OAuth client_id.")
-    if not _is_redirect_uri_allowed(config, redirect_uri):
+    if not _is_redirect_uri_allowed(config, client_id, redirect_uri):
         return json_error(
             config,
             400,

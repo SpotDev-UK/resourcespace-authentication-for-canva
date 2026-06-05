@@ -71,12 +71,144 @@ authorisation code to Canva.
 
 OAuth defaults the broker enforces:
 
-- `client_id` must match `OAUTH_CLIENT_ID`
-- `redirect_uri` must appear verbatim in `OAUTH_REDIRECT_URI_ALLOWLIST`
-  (production)
+- `client_id` must match the primary `OAUTH_CLIENT_ID` or a configured entry
+  in `OAUTH_CLIENTS_JSON`
+- `redirect_uri` must appear verbatim in the allowlist for that exact OAuth
+  client: `OAUTH_REDIRECT_URI_ALLOWLIST` for the primary Canva client, or the
+  client's `redirectUriAllowlist` in `OAUTH_CLIENTS_JSON`
 - PKCE method must be `S256`; `plain` is rejected
 - Refresh tokens rotate on every use, with a configurable grace window
   (`OAUTH_REFRESH_GRACE_SECONDS`, default `30`)
+
+`OAUTH_CLIENTS_JSON` is optional and should be left unset for the current
+Canva-only deployment. It exists so the broker can later support additional
+ResourceSpace-facing integrations without changing the auth/session labelling
+code. Example:
+
+```json
+[
+  {
+    "clientId": "partner-client",
+    "integration": "partner-integration",
+    "redirectUriAllowlist": ["https://partner.example/callback"]
+  }
+]
+```
+
+## ResourceSpace Login POST Hardening
+
+The live ResourceSpace login/session-key exchange uses HTTP POST form data,
+not a GET query string. The broker sends the login request to the tenant's
+configured `apiUrl` with this form body:
+
+```text
+function=login
+username=<ResourceSpace username>
+password=<ResourceSpace password>
+```
+
+This keeps the username and password out of the ResourceSpace login URL, so
+they are not captured by normal URL logs, reverse proxy request URI logs, or
+browser/network tooling that records request targets. ResourceSpace's API
+supports API calls via GET or POST, and `login` still returns the same
+session API key used for subsequent signed requests.
+
+Scope of the change:
+
+- Only the unauthenticated ResourceSpace `login` call moved from GET query
+  parameters to POST form data.
+- The Canva-facing OAuth flow is unchanged: Canva still talks to the broker
+  through `/oauth/authorise`, `/oauth/token`, and `/oauth/revoke`.
+- Subsequent signed ResourceSpace API calls still use the existing
+  session-key signing path. Their query strings contain signed API
+  parameters, but not the user's ResourceSpace password.
+- Multipart upload calls remain POST requests with signed API parameters
+  and file data.
+
+Security and logging expectations:
+
+- Keep all broker-to-ResourceSpace traffic on HTTPS.
+- Do not log POST bodies, ResourceSpace passwords, session API keys, OAuth
+  access tokens, refresh tokens, or signed asset grant URLs.
+- ResourceSpace access logs should show the login request path as the API
+  endpoint only, without `username=` or `password=` query parameters.
+- Invalid credentials should continue to surface as `INVALID_CREDENTIALS`
+  without including the supplied password in logs or error messages.
+
+Operational checks:
+
+- Connect a valid ResourceSpace user through Canva and confirm the broker
+  receives a normal OAuth session.
+- Review ResourceSpace/API gateway logs for that login attempt and confirm
+  the request URL does not contain the username or password.
+- Attempt login with invalid credentials and confirm the user-facing failure
+  remains the existing invalid-credentials behaviour.
+- After a successful login, browse, preview/download, upload, and
+  disconnect/reconnect to confirm the existing session-key flow still works.
+
+## ResourceSpace Canva User-Agent Marker
+
+Outbound live ResourceSpace traffic that belongs to a broker-verified Canva
+OAuth session carries a ResourceSpace Canva marker in the HTTP `User-Agent`
+header:
+
+```text
+User-Agent: python-httpx RSCanva
+```
+
+The marker is derived by the broker after it validates the OAuth `client_id`
+against its server-side OAuth client registry. The primary `OAUTH_CLIENT_ID`
+defaults to the Canva integration; future clients can be mapped explicitly via
+`OAUTH_CLIENTS_JSON`. The Canva app does not send a trusted marker directly,
+and the broker must not blindly forward any frontend-supplied header as proof
+of origin. Token records, refresh records, sessions, and short-lived asset
+grants are stamped with broker-owned integration metadata so ResourceSpace-bound
+requests can be labelled only when they came from a trusted Canva broker
+session.
+
+The marker is an operational/audit signal that distinguishes expected Canva
+integration traffic from generic `python-httpx` traffic. It is not an
+authentication mechanism and it is not proof, on its own, that a request
+should be allowed.
+
+The marker is applied to these broker-to-ResourceSpace paths:
+
+- ResourceSpace login/session-key POST calls made through
+  `_post_jsonish_sync`.
+- ResourceSpace API GET calls made through `_fetch_jsonish_sync`, including
+  `get_user_collections`, `search_get_previews`, `get_resource_data`, and
+  `get_resource_path`.
+- ResourceSpace multipart API uploads made through
+  `_post_multipart_live_api`, including the original uploaded file and the
+  generated preview upload.
+- Proxy fetches for short-lived preview/download grants when the grant
+  source is a live ResourceSpace asset URL.
+
+The marker is not applied to ResourceSpace-bound calls that lack the trusted
+Canva integration metadata. This keeps the broker safe to extend for other
+future integrations without mislabelling their ResourceSpace API traffic as
+Canva traffic.
+
+The marker is intentionally **not** applied to Canva export URL downloads in
+`_download_bytes`, because those URLs are supplied by Canva during the
+upload flow and are not ResourceSpace API traffic.
+
+Keep tenant allowlisting, OAuth bearer-token checks, ResourceSpace permission
+checks, CORS controls, rate limits, and request signing in place. Treat the
+marker as a routing/auditing signal only. Do not log full signed
+ResourceSpace URLs, session keys, download grants, OAuth tokens, or POST
+bodies when validating this behaviour.
+
+Operational checks:
+
+- Confirm ResourceSpace/API access logs show `RSCanva` on browse/search,
+  preview/download, and upload requests triggered from the Canva app.
+- Confirm the marker is absent for ResourceSpace-bound calls made from any
+  non-Canva broker integration or any test session without trusted Canva
+  metadata.
+- If ResourceSpace access rules use this marker as a routing hint, pair it
+  with tenant allowlisting and the existing broker/OAuth controls. Keep a
+  rollback path ready for the first production rollout.
 
 ## Signature Verification
 
@@ -127,8 +259,10 @@ server-side. The broker enforces:
 - `INVALID_TENANT_URL`: malformed tenant URL entered in the OAuth popup
 - `UNKNOWN_TENANT`: tenant host not in `RESOURCE_SPACE_ALLOWED_HOSTS`
 - `INVALID_CREDENTIALS`: ResourceSpace login failed
-- `INVALID_CLIENT`: presented `client_id` does not match `OAUTH_CLIENT_ID`
-- `INVALID_REDIRECT_URI`: `redirect_uri` not in `OAUTH_REDIRECT_URI_ALLOWLIST`
+- `INVALID_CLIENT`: presented `client_id` is not in the broker's configured
+  OAuth client registry
+- `INVALID_REDIRECT_URI`: `redirect_uri` is not in the allowlist for that
+  exact OAuth client
 - `INSUFFICIENT_SCOPE`: token is missing `dam:read` (find/download) or
   `dam:write` (upload)
 - `SESSION_EXPIRED`: local OAuth access token expired or was revoked
@@ -144,10 +278,18 @@ server-side. The broker enforces:
   required
 - Set `CANVA_CLIENT_SECRET`, `OAUTH_CLIENT_ID`,
   `OAUTH_REDIRECT_URI_ALLOWLIST`, `CORS_ORIGIN`
+- Leave `OAUTH_CLIENTS_JSON` unset unless the broker is intentionally serving
+  additional integrations; if set, verify each client's redirect allowlist is
+  client-specific
 - Verify `/healthz`, `/readyz`, `/metrics`
 - Run `pytest`
 - Verify the OAuth popup against your ResourceSpace tenant
+- Verify ResourceSpace logs for the login/session-key request do not include
+  `username=` or `password=` in the request URL
 - Verify `POST /content/resources/find` against real content
+- Verify ResourceSpace logs show `RSCanva` in the user-agent for live
+  ResourceSpace requests triggered by browse/search, preview/download, and
+  upload flows
 - Verify a single design upload from Canva places the resource and a
   preview into the chosen folder
 - Verify preview and download grants expire correctly

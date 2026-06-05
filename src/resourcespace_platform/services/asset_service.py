@@ -21,6 +21,7 @@ import httpx
 from ..config import AppConfig
 from ..data import fixture_data as fixture
 from .json_store import JsonStore
+from .resourcespace._helpers import _broker_integration_from_session, _resourcespace_request_headers
 
 
 def _now_ms() -> int:
@@ -76,6 +77,7 @@ class AssetService:
                 "tenantId": session["tenant"]["id"],
                 "expiresAt": expires_at,
                 "source": source,
+                "integration": _broker_integration_from_session(session),
                 "mimeType": mime_type,
                 "filename": filename,
             }
@@ -182,7 +184,10 @@ class AssetService:
             return 200, body, combined_headers
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                headers=_resourcespace_request_headers(grant.get("integration")),
+            ) as client:
                 upstream = await client.get(source["url"])
         except httpx.HTTPError:
             return None

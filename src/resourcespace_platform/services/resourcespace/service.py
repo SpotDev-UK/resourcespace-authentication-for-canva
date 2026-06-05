@@ -74,10 +74,23 @@ def get_configured_tenant(config: AppConfig, base_url: str | None) -> dict[str, 
 class ResourceSpaceService:
     config: AppConfig
 
-    def authenticate(self, *, tenant_base_url: str | None, username: str, password: str) -> dict[str, Any]:
+    def authenticate(
+        self,
+        *,
+        tenant_base_url: str | None,
+        username: str,
+        password: str,
+        integration: str | None = None,
+    ) -> dict[str, Any]:
         if self.config.resource_space.mode == "fixture":
             return _authenticate_fixture_tenant(tenant_base_url, username, password)
-        return _authenticate_live_tenant(self.config, tenant_base_url, username, password)
+        return _authenticate_live_tenant(
+            self.config,
+            tenant_base_url,
+            username,
+            password,
+            integration=integration,
+        )
 
     def get_session_summary(self, session: dict[str, Any]) -> dict[str, Any]:
         return {
