@@ -269,20 +269,20 @@ def test_oauth_authorize_accepts_configured_secondary_client() -> None:
     clients_json = json.dumps(
         [
             {
-                "clientId": "tagquest-client",
-                "integration": "tagquest",
-                "redirectUriAllowlist": ["https://tagquest.example/callback"],
+                "clientId": "partner-client",
+                "integration": "partner-integration",
+                "redirectUriAllowlist": ["https://partner.example/callback"],
             }
         ]
     )
     overrides = {"OAUTH_CLIENTS_JSON": clients_json}
     for client, storage_path in _build_client(**overrides):
         verifier, challenge = _pkce_pair()
-        redirect_uri = "https://tagquest.example/callback"
+        redirect_uri = "https://partner.example/callback"
         response = client.post(
             "/oauth/authorise",
             data={
-                "client_id": "tagquest-client",
+                "client_id": "partner-client",
                 "redirect_uri": redirect_uri,
                 "response_type": "code",
                 "state": "s",
@@ -302,7 +302,7 @@ def test_oauth_authorize_accepts_configured_secondary_client() -> None:
             "/oauth/token",
             data={
                 "grant_type": "authorization_code",
-                "client_id": "tagquest-client",
+                "client_id": "partner-client",
                 "redirect_uri": redirect_uri,
                 "code": code,
                 "code_verifier": verifier,
@@ -313,10 +313,10 @@ def test_oauth_authorize_accepts_configured_secondary_client() -> None:
 
         state = json.loads(Path(storage_path).read_text())
         record = state["accessTokens"][token]
-        assert record["integration"] == "tagquest"
+        assert record["integration"] == "partner-integration"
         assert record["session"]["broker"] == {
-            "clientId": "tagquest-client",
-            "integration": "tagquest",
+            "clientId": "partner-client",
+            "integration": "partner-integration",
         }
 
 
@@ -324,9 +324,9 @@ def test_oauth_authorize_rejects_cross_client_redirect_uri() -> None:
     clients_json = json.dumps(
         [
             {
-                "clientId": "tagquest-client",
-                "integration": "tagquest",
-                "redirectUriAllowlist": ["https://tagquest.example/callback"],
+                "clientId": "partner-client",
+                "integration": "partner-integration",
+                "redirectUriAllowlist": ["https://partner.example/callback"],
             }
         ]
     )
@@ -339,7 +339,7 @@ def test_oauth_authorize_rejects_cross_client_redirect_uri() -> None:
         response = client.post(
             "/oauth/authorise",
             data={
-                "client_id": "tagquest-client",
+                "client_id": "partner-client",
                 "redirect_uri": "https://canva.example/callback",
                 "response_type": "code",
                 "state": "s",
@@ -363,9 +363,9 @@ def test_removed_oauth_client_cannot_use_existing_tokens() -> None:
     clients_json = json.dumps(
         [
             {
-                "clientId": "tagquest-client",
-                "integration": "tagquest",
-                "redirectUriAllowlist": ["https://tagquest.example/callback"],
+                "clientId": "partner-client",
+                "integration": "partner-integration",
+                "redirectUriAllowlist": ["https://partner.example/callback"],
             }
         ]
     )
@@ -385,11 +385,11 @@ def test_removed_oauth_client_cannot_use_existing_tokens() -> None:
         active_client = TestClient(create_app(active_config), base_url="http://testserver")
         try:
             verifier, challenge = _pkce_pair()
-            redirect_uri = "https://tagquest.example/callback"
+            redirect_uri = "https://partner.example/callback"
             response = active_client.post(
                 "/oauth/authorise",
                 data={
-                    "client_id": "tagquest-client",
+                    "client_id": "partner-client",
                     "redirect_uri": redirect_uri,
                     "response_type": "code",
                     "state": "s",
@@ -408,7 +408,7 @@ def test_removed_oauth_client_cannot_use_existing_tokens() -> None:
                 "/oauth/token",
                 data={
                     "grant_type": "authorization_code",
-                    "client_id": "tagquest-client",
+                    "client_id": "partner-client",
                     "redirect_uri": redirect_uri,
                     "code": code,
                     "code_verifier": verifier,
@@ -426,7 +426,7 @@ def test_removed_oauth_client_cannot_use_existing_tokens() -> None:
                 "/oauth/token",
                 data={
                     "grant_type": "refresh_token",
-                    "client_id": "tagquest-client",
+                    "client_id": "partner-client",
                     "refresh_token": tokens["refresh_token"],
                 },
             )

@@ -88,9 +88,9 @@ code. Example:
 ```json
 [
   {
-    "clientId": "tagquest-client",
-    "integration": "tagquest",
-    "redirectUriAllowlist": ["https://tagquest.example/callback"]
+    "clientId": "partner-client",
+    "integration": "partner-integration",
+    "redirectUriAllowlist": ["https://partner.example/callback"]
   }
 ]
 ```

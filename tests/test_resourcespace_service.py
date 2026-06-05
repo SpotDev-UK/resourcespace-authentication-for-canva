@@ -221,7 +221,7 @@ def test_live_api_get_omits_canva_user_agent_without_trusted_canva_integration(
 
     assert _fetch_jsonish_sync(
         "https://assets.example.com/api/?function=get_user_collections",
-        integration="tagquest",
+        integration="partner-integration",
     ) == {"ok": True}
     assert captured["client_kwargs"]["headers"] == {}
 
@@ -351,7 +351,7 @@ def test_live_login_omits_canva_user_agent_without_trusted_canva_integration(
         "https://curated.resourcespace.example.com",
         "alice@example.com",
         "secret-password",
-        integration="tagquest",
+        integration="partner-integration",
     )
 
     assert captured["url"] == "https://api.curated.resourcespace.example.com/"

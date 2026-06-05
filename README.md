@@ -231,8 +231,11 @@ configured. The recommended workflow:
 
 ### Railway (recommended)
 
-- **Service**: `resourcespace-platform` on Railway project `resourcespace-canva-integration` (production env).
-- **Build**: Dockerfile at `deploy/Dockerfile`, declared in `railway.toml`. This path is also pinned in the Railway dashboard's service manifest.
+- **Service**: link the Railway CLI to the intended project, environment, and
+  service for your deployment. Keep project IDs, access tokens, and
+  environment-specific service names out of version control.
+- **Build**: Dockerfile at `deploy/Dockerfile`, declared in `railway.toml`.
+  Keep the same Dockerfile path configured in the Railway service manifest.
 - **Deploy command**: `railway up --detach` from the repo root. GitHub
   auto-deploy is not enabled on this service.
 - **State**: persisted under `/var/lib/resourcespace-platform/platform-store.json` via a Railway volume mount.
