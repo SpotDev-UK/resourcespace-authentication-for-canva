@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import tempfile
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -114,7 +116,7 @@ def _find_resources(client: TestClient, access_token: str, body: dict[str, Any])
 
 
 def test_oauth_login_yields_token_and_session(harness: tuple[TestClient, str]) -> None:
-    client, _ = harness
+    client, storage_path = harness
     tokens = _authorize_as(
         client,
         tenant_url="https://acme.demo.resourcespace.local",
@@ -132,6 +134,14 @@ def test_oauth_login_yields_token_and_session(harness: tuple[TestClient, str]) -
     payload = me.json()
     assert payload["user"]["username"] == "alice"
     assert payload["tenant"]["id"] == "tenant_acme"
+
+    state = json.loads(Path(storage_path).read_text())
+    record = state["accessTokens"][tokens["access_token"]]
+    assert record["integration"] == "canva"
+    assert record["session"]["broker"] == {
+        "clientId": "canva-dev-app",
+        "integration": "canva",
+    }
 
 
 def test_root_returns_service_summary(harness: tuple[TestClient, str]) -> None:

@@ -40,8 +40,8 @@ production if any of the required ones are missing or unsafe.
 | `APP_ENV` | `production` (or `staging`) |
 | `BASE_URL` | The public HTTPS URL of the broker, e.g. `https://broker.example.com` |
 | `OAUTH_ISSUER` | Same as `BASE_URL` unless you have a separate issuer URL |
-| `OAUTH_CLIENT_ID` | The Canva OAuth client id you captured above (set `OAUTH_ALLOW_DEFAULT_CLIENT_ID=true` if you've kept the `canva-dev-app` placeholder in the Canva Portal) |
-| `OAUTH_REDIRECT_URI_ALLOWLIST` | Comma-separated, exact-match list of redirect URIs Canva uses |
+| `OAUTH_CLIENT_ID` | The primary Canva OAuth client id you captured above (set `OAUTH_ALLOW_DEFAULT_CLIENT_ID=true` if you've kept the `canva-dev-app` placeholder in the Canva Portal) |
+| `OAUTH_REDIRECT_URI_ALLOWLIST` | Comma-separated, exact-match list of redirect URIs the primary Canva integration uses |
 | `CANVA_CLIENT_SECRET` | The base64 verification secret from the Canva Developer Portal. Verifies signatures on the user-uninstall webhook (Canva → broker, server-to-server). |
 | `CANVA_REQUEST_VERIFICATION_MODE` | `required` (gates the user-uninstall webhook; does not apply to `/content/*` since Canva can't sign browser-direct fetches) |
 | `ASSET_SIGNING_SECRET` | Long random string. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
@@ -57,6 +57,7 @@ production if any of the required ones are missing or unsafe.
 | `CANVA_UPLOAD_ALLOWED_HOSTS` | Host allowlist for the `source_url` Canva sends on upload. Capture from logs after the first upload, then tighten. |
 | `CANVA_UPLOAD_MAX_BYTES` | Cap on a single upload (default `52428800`, i.e. 50 MiB) |
 | `METRICS_TOKEN` | If set, `/metrics` returns the extended posture payload only to bearer-token callers |
+| `OAUTH_CLIENTS_JSON` | Optional JSON array for additional OAuth clients, each with `clientId`, optional `integration`, and its own `redirectUriAllowlist`. Leave unset for Canva-only deployments. |
 | `OAUTH_REFRESH_GRACE_SECONDS` | Window during which a just-rotated refresh token still works (default `30`) |
 
 If anything is missing, the broker prints a precise startup error naming

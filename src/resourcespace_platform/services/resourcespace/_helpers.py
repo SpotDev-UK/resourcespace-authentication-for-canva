@@ -12,6 +12,9 @@ SUPPORTED_IMAGE_MIME_TYPES: frozenset[str] = frozenset(
     {"image/jpeg", "image/png", "image/svg+xml", "image/webp", "image/heic"}
 )
 
+RESOURCE_SPACE_CANVA_USER_AGENT = "python-httpx RSCanva"
+RESOURCE_SPACE_CANVA_INTEGRATION = "canva"
+
 
 class ResourceSpaceError(Exception):
     def __init__(self, code: str, message: str, status_code: int = 400) -> None:
@@ -133,6 +136,20 @@ def _to_iso_date(value: Any) -> str | None:
 
 def _sort_collections(collections: list[dict[str, Any]], _sort: str | None = None) -> list[dict[str, Any]]:
     return sorted(collections, key=lambda collection: str(collection.get("name", "")))
+
+
+def _broker_integration_from_session(session: dict[str, Any]) -> str | None:
+    broker = session.get("broker")
+    if not isinstance(broker, dict):
+        return None
+    integration = broker.get("integration")
+    return integration if isinstance(integration, str) else None
+
+
+def _resourcespace_request_headers(integration: str | None = None) -> dict[str, str]:
+    if integration == RESOURCE_SPACE_CANVA_INTEGRATION:
+        return {"User-Agent": RESOURCE_SPACE_CANVA_USER_AGENT}
+    return {}
 
 
 def _build_signed_api_url(

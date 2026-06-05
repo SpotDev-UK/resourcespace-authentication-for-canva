@@ -29,6 +29,45 @@ def _sha256_b64url(value: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
+def _integration_for_client_id(config: AppConfig, client_id: str) -> str | None:
+    client = config.oauth.clients.get(client_id)
+    return client.integration if client else None
+
+
+def _is_configured_client(config: AppConfig, client_id: str) -> bool:
+    return client_id in config.oauth.clients
+
+
+def _stamp_broker_session_metadata(
+    session: dict[str, Any],
+    *,
+    client_id: str,
+    integration: str | None,
+) -> dict[str, Any]:
+    existing_broker = session.get("broker")
+    broker = existing_broker.copy() if isinstance(existing_broker, dict) else {}
+    broker["clientId"] = client_id
+    if integration:
+        broker["integration"] = integration
+    else:
+        broker.pop("integration", None)
+    return {**session, "broker": broker}
+
+
+def _stamp_token_record_metadata(config: AppConfig, record: dict[str, Any]) -> bool:
+    client_id = str(record.get("clientId") or "")
+    if not _is_configured_client(config, client_id):
+        return False
+    integration = _integration_for_client_id(config, client_id)
+    record["integration"] = integration
+    record["session"] = _stamp_broker_session_metadata(
+        record["session"],
+        client_id=client_id,
+        integration=integration,
+    )
+    return True
+
+
 def _prune_expired(
     state: dict[str, dict[str, Any]],
     now: int | None = None,
@@ -87,10 +126,17 @@ class AuthService:
         username: str,
         password: str,
     ) -> str:
+        integration = _integration_for_client_id(self._config, client_id)
         session = self._resourcespace_service.authenticate(
             tenant_base_url=tenant_base_url,
             username=username,
             password=password,
+            integration=integration,
+        )
+        session = _stamp_broker_session_metadata(
+            session,
+            client_id=client_id,
+            integration=integration,
         )
 
         def _updater(state: dict[str, dict[str, Any]]) -> str:
@@ -124,12 +170,19 @@ class AuthService:
             access_token = _random_token("at")
             access_expires_at = _now_ms() + self._config.oauth.token_ttl_seconds * 1000
             refresh_token = _random_token("rt") if rotate_refresh_token else existing_refresh_token
+            integration = _integration_for_client_id(self._config, client_id)
+            session_with_metadata = _stamp_broker_session_metadata(
+                session,
+                client_id=client_id,
+                integration=integration,
+            )
 
             state["accessTokens"][access_token] = {
                 "accessToken": access_token,
                 "clientId": client_id,
                 "scope": scope,
-                "session": session,
+                "integration": integration,
+                "session": session_with_metadata,
                 "expiresAt": access_expires_at,
                 "createdAt": _now_ms(),
             }
@@ -139,7 +192,8 @@ class AuthService:
                     "refreshToken": refresh_token,
                     "clientId": client_id,
                     "scope": scope,
-                    "session": session,
+                    "integration": integration,
+                    "session": session_with_metadata,
                     "createdAt": _now_ms(),
                     "expiresAt": _now_ms() + 30 * 24 * 60 * 60 * 1000,
                     "revokedAt": None,
@@ -163,6 +217,9 @@ class AuthService:
         code: str,
         code_verifier: str | None,
     ) -> dict[str, Any]:
+        if not _is_configured_client(self._config, client_id):
+            return {"error": "invalid_client", "description": "Unknown OAuth client_id."}
+
         def _updater(state: dict[str, dict[str, Any]]) -> dict[str, Any]:
             self._prune(state)
             record = state["authorizationCodes"].get(code)
@@ -194,6 +251,8 @@ class AuthService:
         # Rotate the refresh token on every use. The previous token stays
         # valid for `OAUTH_REFRESH_GRACE_SECONDS` so that two near-simultaneous
         # refresh attempts (e.g. two tabs) don't cause one to fail.
+        if not _is_configured_client(self._config, client_id):
+            return {"error": "invalid_client", "description": "Unknown OAuth client_id."}
         grace_ms = self._config.oauth.refresh_grace_seconds * 1000
 
         def _updater(state: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -201,6 +260,8 @@ class AuthService:
             record = state["refreshTokens"].get(refresh_token)
             if not record or record["clientId"] != client_id:
                 return {"error": "invalid_grant", "description": "Refresh token not found."}
+            if not _stamp_token_record_metadata(self._config, record):
+                return {"error": "invalid_client", "description": "Unknown OAuth client_id."}
             # Mark the old refresh token revoked-with-grace so a duplicate
             # call within `grace_ms` still resolves the session.
             if not record.get("revokedAt"):
@@ -219,7 +280,11 @@ class AuthService:
     def read_access_token(self, token: str) -> dict[str, Any] | None:
         def _updater(state: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
             self._prune(state)
-            return state["accessTokens"].get(token)
+            record = state["accessTokens"].get(token)
+            if record:
+                if not _stamp_token_record_metadata(self._config, record):
+                    return None
+            return record
 
         return self._store.update(_updater)
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
 
 import httpx
 
@@ -11,27 +10,20 @@ from ...config import AppConfig
 from ._helpers import (
     SUPPORTED_IMAGE_MIME_TYPES,
     ResourceSpaceError,
+    _broker_integration_from_session,
     _build_signed_api_url,
     _decode_collection_container_id,
     _encode_collection_container_id,
     _mime_type_from_extension,
     _pick_asset_description,
     _pick_asset_name,
+    _resourcespace_request_headers,
     _sort_collections,
     _to_iso_date,
 )
 
 
-def _fetch_jsonish_sync(url: str) -> Any:
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(url)
-    except httpx.HTTPError as exc:
-        raise ResourceSpaceError(
-            "UPSTREAM_UNAVAILABLE",
-            "ResourceSpace could not be reached.",
-            502,
-        ) from exc
+def _parse_jsonish_response(response: httpx.Response) -> Any:
     if response.status_code == 401 or response.status_code == 403:
         raise ResourceSpaceError(
             "UPSTREAM_SESSION_EXPIRED",
@@ -51,8 +43,47 @@ def _fetch_jsonish_sync(url: str) -> Any:
         return text
 
 
+def _fetch_jsonish_sync(url: str, *, integration: str | None = None) -> Any:
+    try:
+        with httpx.Client(
+            timeout=30.0,
+            headers=_resourcespace_request_headers(integration),
+        ) as client:
+            response = client.get(url)
+    except httpx.HTTPError as exc:
+        raise ResourceSpaceError(
+            "UPSTREAM_UNAVAILABLE",
+            "ResourceSpace could not be reached.",
+            502,
+        ) from exc
+    return _parse_jsonish_response(response)
+
+
+def _post_jsonish_sync(
+    url: str, data: dict[str, str], *, integration: str | None = None
+) -> Any:
+    try:
+        with httpx.Client(
+            timeout=30.0,
+            headers=_resourcespace_request_headers(integration),
+        ) as client:
+            response = client.post(url, data=data)
+    except httpx.HTTPError as exc:
+        raise ResourceSpaceError(
+            "UPSTREAM_UNAVAILABLE",
+            "ResourceSpace could not be reached.",
+            502,
+        ) from exc
+    return _parse_jsonish_response(response)
+
+
 def _authenticate_live_tenant(
-    config: AppConfig, base_url: str | None, username: str, password: str
+    config: AppConfig,
+    base_url: str | None,
+    username: str,
+    password: str,
+    *,
+    integration: str | None = None,
 ) -> dict[str, Any]:
     # Imported locally to avoid a circular import: service.py imports from
     # this module at load time, and get_configured_tenant lives there as
@@ -60,8 +91,11 @@ def _authenticate_live_tenant(
     from .service import get_configured_tenant
 
     tenant = get_configured_tenant(config, base_url)
-    params = urlencode({"function": "login", "username": username, "password": password})
-    result = _fetch_jsonish_sync(f"{tenant['apiUrl']}?{params}")
+    result = _post_jsonish_sync(
+        tenant["apiUrl"],
+        {"function": "login", "username": username, "password": password},
+        integration=integration,
+    )
     if result in (False, "false", "", None):
         raise ResourceSpaceError("INVALID_CREDENTIALS", "Invalid ResourceSpace credentials.", 401)
     session_key = str(result)
@@ -191,7 +225,12 @@ def normalize_live_asset_page(response: Any) -> dict[str, Any]:
 
 
 def _call_live_api(
-    *, tenant: dict[str, Any], username: str, session_key: str, params: dict[str, Any]
+    *,
+    tenant: dict[str, Any],
+    username: str,
+    session_key: str,
+    params: dict[str, Any],
+    integration: str | None = None,
 ) -> Any:
     url = _build_signed_api_url(
         api_url=tenant["apiUrl"],
@@ -199,7 +238,7 @@ def _call_live_api(
         session_key=session_key,
         params=params,
     )
-    return _fetch_jsonish_sync(url)
+    return _fetch_jsonish_sync(url, integration=integration)
 
 
 def _list_live_containers(session: dict[str, Any], parent_id: str | None) -> list[dict[str, Any]]:
@@ -208,6 +247,7 @@ def _list_live_containers(session: dict[str, Any], parent_id: str | None) -> lis
         username=session["user"]["username"],
         session_key=session["upstream"]["sessionKey"],
         params={"function": "get_user_collections"},
+        integration=_broker_integration_from_session(session),
     )
     current_parent_ref = _decode_collection_container_id(parent_id) if parent_id else None
     scoped = _apply_configured_collection_tree(
@@ -248,6 +288,7 @@ def _list_live_assets(
         tenant=session["tenant"],
         username=session["user"]["username"],
         session_key=session["upstream"]["sessionKey"],
+        integration=_broker_integration_from_session(session),
         params={
             "function": "search_get_previews",
             "search": build_live_search_string(query, container_id),
@@ -268,6 +309,7 @@ def _get_live_download_source(session: dict[str, Any], asset_id: str) -> dict[st
         username=session["user"]["username"],
         session_key=session["upstream"]["sessionKey"],
         params={"function": "get_resource_data", "resource": asset_id},
+        integration=_broker_integration_from_session(session),
     )
     if not resource or resource in (False, "false"):
         raise ResourceSpaceError("NOT_FOUND", "Asset not found.", 404)
@@ -281,6 +323,7 @@ def _get_live_download_source(session: dict[str, Any], asset_id: str) -> dict[st
         tenant=session["tenant"],
         username=session["user"]["username"],
         session_key=session["upstream"]["sessionKey"],
+        integration=_broker_integration_from_session(session),
         params={
             "function": "get_resource_path",
             "ref": asset_id,

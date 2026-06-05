@@ -199,8 +199,8 @@ precise list of which variables are missing or unsafe.
 | `CANVA_CLIENT_SECRET` | Base64-encoded secret from your Canva app. Used to verify the signature on the user-uninstall webhook (Canva → broker, server-to-server). |
 | `CANVA_REQUEST_VERIFICATION_MODE=required` | Gates `/webhooks/canva/user-uninstall` only. Default is `smart` (dev convenience). Production must enforce. The `/content/*` endpoints are protected by bearer-token + scope, not signature, because Canva can't sign the browser-direct fetches the DAM panel makes. |
 | `ASSET_SIGNING_SECRET` | Long random value (`python -c "import secrets; print(secrets.token_urlsafe(32))"`). The default `development-signing-secret` is rejected. |
-| `OAUTH_CLIENT_ID` | The OAuth client id Canva uses against this broker. The `canva-dev-app` placeholder is rejected unless you also set `OAUTH_ALLOW_DEFAULT_CLIENT_ID=true` (only safe when the redirect-URI allowlist is tight). |
-| `OAUTH_REDIRECT_URI_ALLOWLIST` | Comma-separated, exact-match list of redirect URIs your Canva integration uses. The broker rejects any other `redirect_uri` on `/oauth/authorise`. |
+| `OAUTH_CLIENT_ID` | The primary OAuth client id Canva uses against this broker. The `canva-dev-app` placeholder is rejected unless you also set `OAUTH_ALLOW_DEFAULT_CLIENT_ID=true` (only safe when the redirect-URI allowlist is tight). |
+| `OAUTH_REDIRECT_URI_ALLOWLIST` | Comma-separated, exact-match list of redirect URIs the primary Canva integration uses. The broker rejects any other `redirect_uri` on `/oauth/authorise`. |
 | `CORS_ORIGIN` | Comma-separated list of origins Canva uses to talk to the broker. Typically the iframe origin (`https://app-<lowercased-app-id>.canva-apps.com`) AND the editor origin (`https://www.canva.com`) — the editor fetches image bytes when a user drags an asset onto the canvas. Wildcard `*` is rejected. |
 
 Other env vars worth setting (not validated, but recommended):
@@ -210,6 +210,7 @@ Other env vars worth setting (not validated, but recommended):
 | `CANVA_UPLOAD_ALLOWED_HOSTS` | Comma-separated host allowlist for the Canva-supplied `source_url` on uploads. Leave empty to allow any public host (private IPs are blocked unconditionally). Capture real hosts from your first deploy's logs and tighten. |
 | `CANVA_UPLOAD_MAX_BYTES` | Cap on the size of a downloaded export in bytes. Default `52428800` (50 MiB). |
 | `CANVA_UPLOAD_MAX_IMAGE_PIXELS` | Pillow's anti-decompression-bomb limit. Default `50000000`. |
+| `OAUTH_CLIENTS_JSON` | Optional JSON array for additional broker clients. Each entry needs `clientId`, optional `integration`, and `redirectUriAllowlist`; the redirect allowlist is enforced per client. Leave unset for the current Canva-only deployment. |
 | `OAUTH_REFRESH_GRACE_SECONDS` | How long the just-rotated refresh token remains valid so two near-simultaneous refresh calls don't collide. Default `30`. |
 | `METRICS_TOKEN` | When set, `/metrics` returns the extended posture payload only to callers presenting `Authorization: Bearer <this>`. Empty means `/metrics` returns aggregate counts only (no posture data). |
 

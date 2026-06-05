@@ -9,7 +9,12 @@ from urllib.parse import urlparse
 import httpx
 
 from ...config import AppConfig
-from ._helpers import ResourceSpaceError, _build_signed_api_url
+from ._helpers import (
+    ResourceSpaceError,
+    _broker_integration_from_session,
+    _build_signed_api_url,
+    _resourcespace_request_headers,
+)
 from ._live_backend import _call_live_api
 
 
@@ -110,6 +115,7 @@ def _post_multipart_live_api(
     file_bytes: bytes,
     filename: str,
     content_type: str,
+    integration: str | None = None,
 ) -> Any:
     """POST a multipart upload. On hosted ResourceSpace tenants this call
     often returns HTTP 400 with `{"error": true, "error_note": ...}` even
@@ -124,7 +130,10 @@ def _post_multipart_live_api(
         params=params,
     )
     try:
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(
+            timeout=120.0,
+            headers=_resourcespace_request_headers(integration),
+        ) as client:
             response = client.post(
                 url,
                 files={"file": (filename, file_bytes, content_type)},
@@ -262,11 +271,13 @@ def _upload_live_resource(
     tenant = session["tenant"]
     username = session["user"]["username"]
     session_key = session["upstream"]["sessionKey"]
+    integration = _broker_integration_from_session(session)
 
     new_ref = _call_live_api(
         tenant=tenant,
         username=username,
         session_key=session_key,
+        integration=integration,
         params={
             "function": "create_resource",
             "resource_type": 1,
@@ -299,6 +310,7 @@ def _upload_live_resource(
         file_bytes=file_bytes,
         filename=filename,
         content_type=content_type,
+        integration=integration,
     )
     if upload_result in (False, "false", "", None):
         raise ResourceSpaceError(
@@ -336,6 +348,7 @@ def _upload_live_resource(
                 file_bytes=preview_bytes,
                 filename="preview.jpg",
                 content_type="image/jpeg",
+                integration=integration,
             )
         except ResourceSpaceError:
             pass
@@ -345,6 +358,7 @@ def _upload_live_resource(
             tenant=tenant,
             username=username,
             session_key=session_key,
+            integration=integration,
             params={
                 "function": "update_field",
                 "resource": ref_str,
@@ -357,6 +371,7 @@ def _upload_live_resource(
         tenant=tenant,
         username=username,
         session_key=session_key,
+        integration=integration,
         params={
             "function": "add_resource_to_collection",
             "resource": ref_str,
