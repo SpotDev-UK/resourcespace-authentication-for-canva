@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .config import AppConfig
+from .config import DEV_LIKE_ENVIRONMENTS, AppConfig
 from .services.asset_service import AssetService, create_asset_service
 from .services.auth_service import AuthService, create_auth_service
+from .services.field_crypto import create_field_cipher
 from .services.json_store import JsonStore, create_json_store
 from .services.rate_limiter import RateLimiter, create_rate_limiter
 from .services.resourcespace import ResourceSpaceService, create_resourcespace_service
@@ -26,12 +27,17 @@ class Dependencies:
 
 
 def build_dependencies(config: AppConfig) -> Dependencies:
-    store = create_json_store(config.storage_path)
+    store = create_json_store(
+        config.storage_path,
+        require_secure_permissions=config.environment not in DEV_LIKE_ENVIRONMENTS,
+    )
     resourcespace_service = create_resourcespace_service(config)
+    field_cipher = create_field_cipher(config.storage_encryption_key or None)
     auth_service = create_auth_service(
         config=config,
         store=store,
         resourcespace_service=resourcespace_service,
+        field_cipher=field_cipher,
     )
     asset_service = create_asset_service(config=config, store=store)
     rate_limiter = create_rate_limiter(

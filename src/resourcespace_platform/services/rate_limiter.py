@@ -26,6 +26,9 @@ class RateLimiter:
     def consume(self, key: str) -> RateLimitResult:
         now = int(time.time() * 1000)
         with self._lock:
+            for stale_key, bucket in list(self._buckets.items()):
+                if bucket["resetAt"] <= now and stale_key != key:
+                    del self._buckets[stale_key]
             bucket = self._buckets.get(key)
             if bucket is None or bucket["resetAt"] <= now:
                 self._buckets[key] = {"count": 1, "resetAt": now + self._window_ms}

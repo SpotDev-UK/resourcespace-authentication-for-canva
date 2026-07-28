@@ -37,7 +37,7 @@ production if any of the required ones are missing or unsafe.
 
 | Var | Value |
 |---|---|
-| `APP_ENV` | `production` (or `staging`) |
+| `APP_ENV` | `production` (or `staging`). **Defaults to `production` when unset** — the Docker image and systemd unit set this explicitly. Use `development` only on localhost (see `.env.example`). |
 | `BASE_URL` | The public HTTPS URL of the broker, e.g. `https://broker.example.com` |
 | `OAUTH_ISSUER` | Same as `BASE_URL` unless you have a separate issuer URL |
 | `OAUTH_CLIENT_ID` | The primary Canva OAuth client id you captured above (set `OAUTH_ALLOW_DEFAULT_CLIENT_ID=true` if you've kept the `canva-dev-app` placeholder in the Canva Portal) |
@@ -47,8 +47,12 @@ production if any of the required ones are missing or unsafe.
 | `ASSET_SIGNING_SECRET` | Long random string. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `CORS_ORIGIN` | Comma-separated origins Canva uses (typically `https://app-<lowercased-app-id>.canva-apps.com,https://www.canva.com` — the second entry lets the Canva editor fetch image bytes when a user drags an asset onto the canvas) |
 | `STORAGE_PATH` | A persistent path that survives restarts, e.g. `/var/lib/resourcespace-platform/platform-store.json` |
+| `STORAGE_ENCRYPTION_KEY` | Fernet key for encrypting sensitive store fields at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `RESOURCE_SPACE_MODE` | `live` |
-| `RESOURCE_SPACE_ALLOWED_HOSTS` | Comma-separated list of ResourceSpace hostnames the broker is permitted to talk to |
+| `RESOURCE_SPACE_ALLOWED_HOSTS` | Set to `.resourcespace.com` for the hosted rollout. This accepts canonical hosts such as `tenant.resourcespace.com` and nested hosts such as `spotdev.free.resourcespace.com`, but not lookalikes. The suffix is an approved routing boundary, not proof of who operates the hostname. |
+| `RESOURCE_SPACE_TENANTS_JSON` | Normally `[]`. Add an exact tenant object only when a customer's original ResourceSpace-provided hostname is unavailable or an instance needs a per-tenant override. |
+| `CLIENT_IP_HEADER` | Header carrying the original client IP for rate limits and SSO quotas. Defaults to `x-real-ip` outside development/test. Ignored unless the transport peer matches `TRUSTED_PROXY_HOSTS`. |
+| `TRUSTED_PROXY_HOSTS` | Comma-separated CIDRs/addresses of reverse proxies that may set `CLIENT_IP_HEADER`. Defaults to RFC1918+loopback+`100.64.0.0/10` outside development/test. Required when `CLIENT_IP_HEADER` is set. Uvicorn `proxy_headers` stays disabled. |
 
 **Recommended (optional)**
 
@@ -97,8 +101,10 @@ Two of the env vars (`OAUTH_REDIRECT_URI_ALLOWLIST` and
 `CANVA_UPLOAD_ALLOWED_HOSTS`) depend on values that are specific to your
 Canva app and hard to know in advance. The recommended workflow:
 
-1. Deploy with `APP_ENV=development` so the validator stays out of the
-   way.
+1. Run the broker **locally** with default `APP_ENV=development`, or use a
+   staging deploy with `APP_ENV=staging` and the full security config.
+   Railway refuses `APP_ENV=development` / `test` when `RAILWAY_ENVIRONMENT`
+   is set.
 2. Complete one OAuth flow and one design export from your real Canva app.
 3. Read the broker's structured logs:
    - `oauth_authorize_completed` records the exact `redirect_uri` Canva

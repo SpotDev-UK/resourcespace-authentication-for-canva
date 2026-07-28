@@ -22,6 +22,8 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Import-time sanity check
+        env:
+          APP_ENV: development
         run: python -c "from resourcespace_platform.main import create_app; create_app()"
 
       - name: Run tests

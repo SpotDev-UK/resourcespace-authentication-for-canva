@@ -13,8 +13,12 @@ certifi==2026.4.22
     # via
     #   httpcore
     #   httpx
+cffi==2.1.0
+    # via cryptography
 click==8.3.3
     # via uvicorn
+cryptography==49.0.0
+    # via resourcespace-platform (pyproject.toml)
 fastapi==0.136.1
     # via resourcespace-platform (pyproject.toml)
 h11==0.16.0
@@ -46,6 +50,8 @@ pydantic-core==2.46.3
     # via pydantic
 pydantic-settings==2.14.0
     # via resourcespace-platform (pyproject.toml)
+pycparser==3.0
+    # via cffi
 python-dotenv==1.2.2
     # via
     #   pydantic-settings

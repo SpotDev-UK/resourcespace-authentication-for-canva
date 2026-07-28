@@ -26,10 +26,14 @@ async def canva_user_uninstall(request: Request) -> Response:
         path=request.url.path,
         raw_body=raw_body,
     )
-    if not verification.ok:
+    if not verification.ok or verification.skipped:
         log.warn(
             "canva_signature_rejected",
-            {"path": request.url.path, "reason": verification.reason},
+            {
+                "path": request.url.path,
+                "reason": verification.reason or "verification_skipped",
+                "skipped": verification.skipped,
+            },
         )
         return json_error(
             config,

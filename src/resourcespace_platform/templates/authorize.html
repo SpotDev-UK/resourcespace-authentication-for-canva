@@ -117,6 +117,13 @@
         outline: none;
         box-shadow: 0 0 0 3px rgba(10, 145, 201, 0.45);
       }
+      button.sso-button {
+        margin-top: 12px;
+        background: #ffffff;
+        color: var(--rs-deep-navy);
+        border: 1px solid var(--rs-border);
+      }
+      button.sso-button:hover { background: var(--rs-soft-bg); }
       .error {
         margin: 16px 0 0;
         padding: 12px 14px;
@@ -208,6 +215,22 @@
           autocomplete="current-password"
         />
         <button type="submit">Sign in</button>
+        {% if sso_enabled %}
+        <button
+          type="submit"
+          name="auth_method"
+          value="sso"
+          formnovalidate
+          class="sso-button"
+        >
+          Sign in with single sign-on
+        </button>
+        <p class="meta">
+          Single sign-on sends you to your ResourceSpace tenant to sign in
+          (SAML, MFA or an existing session). Enter your ResourceSpace URL
+          above first.
+        </p>
+        {% endif %}
       </form>
       <p class="privacy">
         Your credentials are sent only to the ResourceSpace tenant at the

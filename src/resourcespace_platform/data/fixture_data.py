@@ -52,6 +52,15 @@ USERS: list[dict[str, Any]] = [
 ]
 
 
+# Fixture SSO session keys -> fixture user id. Simulates ResourceSpace handing
+# back a session key for an already-authenticated user via the hosted-login
+# handoff, so the SSO flow can be exercised end to end without a live tenant.
+FIXTURE_SSO_SESSION_KEYS: dict[str, str] = {
+    "fixture-sso-alice": "user_alice",
+    "fixture-sso-clara": "user_clara",
+}
+
+
 CONTAINERS: list[dict[str, Any]] = [
     {"id": "container_acme_root", "tenantId": "tenant_acme", "parentId": None, "name": "Brand Library"},
     {"id": "container_acme_campaigns", "tenantId": "tenant_acme", "parentId": "container_acme_root", "name": "Campaigns"},

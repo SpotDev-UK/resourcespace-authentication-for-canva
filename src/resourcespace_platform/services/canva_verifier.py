@@ -47,6 +47,21 @@ def _calculate_signature(secret: bytes, message: str) -> str:
     return hmac.new(secret, message.encode("utf-8"), sha256).hexdigest()
 
 
+def _signature_matches(expected: str, candidate: str) -> bool:
+    """Compare a candidate only when it has the expected ASCII digest shape.
+
+    ``compare_digest`` safely returns ``False`` for different-length ASCII
+    strings, but raises ``TypeError`` for non-ASCII strings. The explicit
+    guards make malformed signature-list entries a normal verification failure
+    and allow a later valid signature to be checked during secret rotation.
+    """
+    return (
+        len(candidate) == len(expected)
+        and candidate.isascii()
+        and hmac.compare_digest(expected, candidate)
+    )
+
+
 def _should_verify(mode: str, marker_present: bool) -> bool:
     if mode == "off":
         return False
@@ -74,6 +89,8 @@ def verify_canva_get_request(
     signatures = _split_signatures(query_params.get("signatures"))
     should_run = _should_verify(config.signing.request_verification_mode, bool(signatures))
     if not should_run:
+        if config.signing.request_verification_mode == "off":
+            return VerificationResult(ok=True)
         return VerificationResult(ok=True, skipped=True)
 
     secret = _decode_secret(config)
@@ -103,7 +120,7 @@ def verify_canva_get_request(
 
     message = f"v1:{time_value}:{user}:{brand}:{extensions}:{state}"
     expected = _calculate_signature(secret, message)
-    if expected not in signatures:
+    if not any(_signature_matches(expected, candidate) for candidate in signatures):
         return VerificationResult(ok=False, reason="invalid_signature")
 
     return VerificationResult(ok=True)
@@ -120,6 +137,8 @@ def verify_canva_post_request(
     timestamp = headers.get("x-canva-timestamp")
     should_run = _should_verify(config.signing.request_verification_mode, bool(signatures))
     if not should_run:
+        if config.signing.request_verification_mode == "off":
+            return VerificationResult(ok=True)
         return VerificationResult(ok=True, skipped=True)
 
     secret = _decode_secret(config)
@@ -143,7 +162,7 @@ def verify_canva_post_request(
 
     message = f"v1:{timestamp}:{path}:{raw_body}"
     expected = _calculate_signature(secret, message)
-    if expected not in signatures:
+    if not any(_signature_matches(expected, candidate) for candidate in signatures):
         return VerificationResult(ok=False, reason="invalid_signature")
 
     return VerificationResult(ok=True)

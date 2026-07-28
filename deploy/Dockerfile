@@ -19,7 +19,8 @@ RUN useradd --system --uid 1001 --no-create-home --gid 0 broker && \
     chown -R broker:0 /var/lib/resourcespace-platform
 
 ENV PORT=3001 \
-    STORAGE_PATH=/var/lib/resourcespace-platform/platform-store.json
+    STORAGE_PATH=/var/lib/resourcespace-platform/platform-store.json \
+    APP_ENV=production
 
 EXPOSE 3001
 USER broker

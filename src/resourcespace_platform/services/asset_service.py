@@ -8,20 +8,238 @@ Grants are HMAC-signed (secret lives in ASSET_SIGNING_SECRET) and expire after
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import secrets
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
 from ..config import AppConfig
 from ..data import fixture_data as fixture
 from .json_store import JsonStore
-from .resourcespace._helpers import _broker_integration_from_session, _resourcespace_request_headers
+from .resourcespace._helpers import (
+    ResourceSpaceError,
+    _broker_integration_from_session,
+    _resourcespace_request_headers,
+    pin_request,
+)
+
+# The CONNECT + response-header race across a host's validated addresses is
+# bounded by one hard deadline; candidates are attempted concurrently with a
+# short start stagger (Happy-Eyeballs style) so a black-holed address neither
+# blocks the worker nor delays fallback. Only the winning connection's body is
+# then streamed (bounded memory), OUTSIDE the connect deadline, with its own
+# read-idle timeout.
+_PROXY_CONNECT_DEADLINE_SECONDS = 8.0
+_PROXY_STAGGER_SECONDS = 0.25
+_PROXY_PER_ADDRESS_CONNECT_SECONDS = 5.0
+_PROXY_READ_TIMEOUT_SECONDS = 30.0
+
+
+async def _safe_aclose(stream_cm: Any) -> None:
+    with contextlib.suppress(Exception):
+        await stream_cm.__aexit__(None, None, None)
+
+
+async def _open_pinned_stream(
+    client: httpx.AsyncClient,
+    url: str,
+    host_headers: dict[str, str],
+    extensions: dict[str, Any],
+) -> tuple[Any, httpx.Response]:
+    """Connect and read the response headers only (not the body). Returns the
+    open stream context manager and its response so the caller can either read
+    the body or close it. Raises ``httpx.ConnectError``/``ConnectTimeout`` on a
+    connection failure so the racer can fall back."""
+    timeout = httpx.Timeout(
+        _PROXY_READ_TIMEOUT_SECONDS, connect=_PROXY_PER_ADDRESS_CONNECT_SECONDS
+    )
+    stream_cm = client.stream(
+        "GET", url, headers=host_headers, extensions=extensions, timeout=timeout
+    )
+    response = await stream_cm.__aenter__()
+    return stream_cm, response
+
+
+async def _race_pinned_connection(
+    client: httpx.AsyncClient,
+    pinned_urls: list[str],
+    host_headers: dict[str, str],
+    extensions: dict[str, Any],
+) -> tuple[Any, httpx.Response] | None:
+    """Open connections to the pinned addresses concurrently (staggered) under
+    one hard connect deadline. Returns the first (stream_cm, response) with an
+    acceptable (<400) status, or None. Losing/errored streams are closed and
+    pending attempts cancelled; the winner is left open for the caller to read.
+    A connected-but-unusable status (>=400) gives up (other addresses serve the
+    same resource)."""
+
+    async def _attempt(index: int, url: str) -> tuple[Any, httpx.Response]:
+        if index:
+            await asyncio.sleep(index * _PROXY_STAGGER_SECONDS)
+        return await _open_pinned_stream(client, url, host_headers, extensions)
+
+    tasks = [asyncio.create_task(_attempt(i, u)) for i, u in enumerate(pinned_urls)]
+    index_of = {task: index for index, task in enumerate(tasks)}
+    winner: tuple[Any, httpx.Response] | None = None
+    # An unexpected (non-transport) error is captured and re-raised OUTSIDE the
+    # timeout scope: raising it inside would let the deadline's `except
+    # TimeoutError` swallow a re-raised built-in TimeoutError and mask the bug.
+    unexpected: BaseException | None = None
+    try:
+        async with asyncio.timeout(_PROXY_CONNECT_DEADLINE_SECONDS):
+            pending = set(tasks)
+            give_up = False
+            while pending and winner is None and not give_up and unexpected is None:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                # Process a completed batch deterministically: an acceptable
+                # (<400) response always wins over a bad/errored one that
+                # completes in the same tick, and the lowest-ordered acceptable
+                # candidate is chosen (set iteration order is irrelevant). Only
+                # give up if a batch has no acceptable response but does have a
+                # bad status (other addresses serve the same resource). Bad/extra
+                # streams are closed in the finally.
+                accepted: list[tuple[int, Any, httpx.Response]] = []
+                saw_reject = False
+                for task in done:
+                    exc = task.exception()
+                    if exc is None:
+                        stream_cm, response = task.result()
+                        if response.status_code < 400:
+                            accepted.append((index_of[task], stream_cm, response))
+                        else:
+                            # A genuine HTTP error status: authoritative.
+                            saw_reject = True
+                    elif isinstance(exc, httpx.TransportError):
+                        # Address-specific transport failure (ConnectError,
+                        # ReadTimeout, WriteError, RemoteProtocolError, ...):
+                        # ignore it and try the remaining addresses.
+                        pass
+                    elif unexpected is None:
+                        # Unexpected (programming/config) error: capture the
+                        # first and surface it after the timeout scope.
+                        unexpected = exc
+                if accepted:
+                    accepted.sort(key=lambda item: item[0])
+                    winner = (accepted[0][1], accepted[0][2])
+                elif saw_reject:
+                    give_up = True
+    except TimeoutError:
+        pass  # the connect deadline expired; treat as no reachable address
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for result in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(result, tuple) and len(result) == 2:
+                stream_cm, _resp = result
+                if winner is None or stream_cm is not winner[0]:
+                    await _safe_aclose(stream_cm)
+    # A genuine success still wins; otherwise surface the unexpected error.
+    if winner is None and unexpected is not None:
+        raise unexpected
+    return winner
+
+
+async def _race_pinned_fetch(
+    pinned_urls: list[str],
+    host_headers: dict[str, str],
+    extensions: dict[str, Any],
+    max_bytes: int,
+    integration: str | None,
+) -> tuple[bytes, str | None] | None:
+    """Race the pinned addresses to an acceptable response, then stream ONLY the
+    winner's body (bounded memory) with a read-idle timeout, outside the connect
+    deadline. Returns (body, content-type) or None.
+
+    follow_redirects is pinned False (a redirect could pivot to an unvalidated
+    host) and trust_env False (an env proxy would CONNECT-tunnel past the pin).
+    """
+    async with httpx.AsyncClient(
+        follow_redirects=False,
+        trust_env=False,
+        headers=_resourcespace_request_headers(integration),
+    ) as client:
+        winner = await _race_pinned_connection(
+            client, pinned_urls, host_headers, extensions
+        )
+        if winner is None:
+            return None
+        stream_cm, response = winner
+        try:
+            declared = response.headers.get("content-length")
+            if declared is not None:
+                try:
+                    if int(declared) > max_bytes:
+                        return None
+                except ValueError:
+                    pass
+            chunks: list[bytes] = []
+            received = 0
+            async for chunk in response.aiter_bytes():
+                received += len(chunk)
+                if received > max_bytes:
+                    return None  # abort without returning partial content
+                chunks.append(chunk)
+            return b"".join(chunks), response.headers.get("content-type")
+        except httpx.HTTPError:
+            return None
+        finally:
+            await _safe_aclose(stream_cm)
+
+
+def _is_svg_content_type(content_type: str | None) -> bool:
+    if not content_type:
+        return False
+    return content_type.split(";", 1)[0].strip().lower() == "image/svg+xml"
+
+
+def _harden_asset_response_headers(
+    headers: dict[str, str],
+    *,
+    content_type: str,
+    filename: str | None,
+    from_proxy: bool,
+) -> None:
+    headers["X-Content-Type-Options"] = "nosniff"
+    headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    if from_proxy and _is_svg_content_type(content_type):
+        headers["Content-Type"] = "application/octet-stream"
+        headers["Content-Disposition"] = _attachment_content_disposition(filename or "download.svg")
+
+
+def _sanitized_filename_parts(filename: str) -> tuple[str, str]:
+    cleaned = "".join(ch for ch in filename if ord(ch) >= 32 and ord(ch) != 127)
+    ascii_fallback = cleaned.encode("ascii", "ignore").decode("ascii").replace('"', "").strip()
+    if not ascii_fallback:
+        ascii_fallback = "download"
+    encoded = quote(cleaned, safe="")
+    return ascii_fallback, encoded
+
+
+def _content_disposition(filename: str) -> str:
+    """Build a safe inline Content-Disposition value.
+
+    Strips control characters (CR/LF included) to block response-header
+    injection, and emits an RFC 5987 ``filename*`` for non-ASCII names
+    alongside an ASCII-only ``filename`` fallback (a raw non-latin-1 value
+    in a header raises at the ASGI layer).
+    """
+    ascii_fallback, encoded = _sanitized_filename_parts(filename)
+    return f"inline; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+
+
+def _attachment_content_disposition(filename: str) -> str:
+    ascii_fallback, encoded = _sanitized_filename_parts(filename)
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 def _now_ms() -> int:
@@ -181,28 +399,51 @@ class AssetService:
                 "utf-8"
             )
             combined_headers["Content-Type"] = grant.get("mimeType") or "image/svg+xml; charset=utf-8"
+            _harden_asset_response_headers(
+                combined_headers,
+                content_type=combined_headers["Content-Type"],
+                filename=grant.get("filename"),
+                from_proxy=False,
+            )
             return 200, body, combined_headers
 
+        # SSRF guard + DNS pin. Canonicalises the host (UTS46), checks the
+        # optional allowlist, and resolves + validates + pins the addresses, all
+        # on the exact host httpx would connect to. Run OFF the event loop: the
+        # blocking getaddrinfo must not stall the Uvicorn worker.
         try:
-            async with httpx.AsyncClient(
-                timeout=30.0,
-                headers=_resourcespace_request_headers(grant.get("integration")),
-            ) as client:
-                upstream = await client.get(source["url"])
-        except httpx.HTTPError:
+            pinned_urls, host_headers, extensions = await asyncio.to_thread(
+                pin_request,
+                source["url"],
+                allowed_hosts=self._config.resource_space.asset_allowed_hosts,
+            )
+        except ResourceSpaceError:
             return None
-        if upstream.status_code >= 400:
+
+        fetched = await _race_pinned_fetch(
+            pinned_urls,
+            host_headers,
+            extensions,
+            self._config.resource_space.asset_proxy_max_bytes,
+            grant.get("integration"),
+        )
+        if fetched is None:
             return None
-        body = upstream.content
+        body, content_type_header = fetched
         combined_headers["Content-Type"] = (
             grant.get("mimeType")
-            or upstream.headers.get("content-type")
+            or content_type_header
             or "application/octet-stream"
         )
         filename = grant.get("filename")
         if filename:
-            safe = filename.replace('"', "")
-            combined_headers["Content-Disposition"] = f'inline; filename="{safe}"'
+            combined_headers["Content-Disposition"] = _content_disposition(filename)
+        _harden_asset_response_headers(
+            combined_headers,
+            content_type=combined_headers["Content-Type"],
+            filename=filename,
+            from_proxy=True,
+        )
         return 200, body, combined_headers
 
 
