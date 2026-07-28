@@ -41,6 +41,32 @@ for which is in the following repo:
 
 Fixture mode rejects upload calls explicitly — uploads are live-only.
 
+Outside `development`/`test`, a tenant must either match an exact entry in
+`RESOURCE_SPACE_TENANTS_JSON` or fall under an approved suffix in
+`RESOURCE_SPACE_ALLOWED_HOSTS`. Suffix-matched tenants are derived at runtime
+and are restricted to HTTPS on port 443 with a same-origin API URL. The hosted
+rollout uses `.resourcespace.com`; customers should enter their original
+ResourceSpace-provided hostname even if they normally use a custom domain. Use
+an exact entry only when that original hostname is unavailable or an instance
+needs a per-tenant override. A configured suffix is a broker routing boundary,
+not proof of who operates a hostname.
+
+### Sign-in methods
+
+Independently of `RESOURCE_SPACE_MODE`, the OAuth popup supports two ways
+for a user to authenticate against their ResourceSpace tenant:
+
+- **Password** (default): the popup collects a ResourceSpace username and
+  password directly.
+- **ResourceSpace hosted-login (SSO)**: set `RESOURCE_SPACE_SSO_ENABLED=true`
+  to show a second "Sign in with single sign-on" button on the popup. It
+  hands the browser off to the tenant's own login page
+  (`pages/user/user_api_session.php`), where SAML, MFA, or an existing
+  session can complete the sign-in, then ResourceSpace posts the result back
+  to the broker. Off by default. See
+  [SSO setup steps](./docs/SSO-SETUP-STEPS.md) for the tenant/Entra
+  configuration this depends on.
+
 ---
 
 ## API surface
@@ -48,7 +74,20 @@ Fixture mode rejects upload calls explicitly — uploads are live-only.
 OAuth:
 
 - `GET /oauth/authorise` (also `GET /oauth/authorize` — redirects to the `-ise` spelling)
-- `POST /oauth/authorise` (also `POST /oauth/authorize`)
+- `POST /oauth/authorise` (also `POST /oauth/authorize`): accepts an
+  `auth_method` form field: `password` (default) or `sso` (hosted-login
+  handoff, only offered on the sign-in page when
+  `RESOURCE_SPACE_SSO_ENABLED=true`)
+- `POST /oauth/sso/callback`: receives the ResourceSpace hosted-login POST
+  (`state`, `sessionkey`, `username`, `email`, `fullname`). Email and fullname
+  on the callback are ignored (only username and sessionkey are validated);
+  when `STORAGE_ENCRYPTION_KEY` is set, any trusted sensitive fields are
+  Fernet-encrypted at rest. ResourceSpace calls this server-side; the callback
+  returns `200` with `{"message", "redirectUrl"}` on success. With Dan's SSO
+  redirect patch, ResourceSpace then issues HTTP 303 to `redirectUrl` so the
+  browser popup completes the Canva handoff. Returns `404` while
+  `RESOURCE_SPACE_SSO_ENABLED` is false. Rate-limited. See `docs/OPERATIONS.md`
+  for enablement prerequisites (browser UAT, client IP verification, RS patch).
 - `POST /oauth/token`
 - `POST /oauth/revoke`
 - `GET /oauth/userinfo`
@@ -202,16 +241,31 @@ precise list of which variables are missing or unsafe.
 | `OAUTH_CLIENT_ID` | The primary OAuth client id Canva uses against this broker. The `canva-dev-app` placeholder is rejected unless you also set `OAUTH_ALLOW_DEFAULT_CLIENT_ID=true` (only safe when the redirect-URI allowlist is tight). |
 | `OAUTH_REDIRECT_URI_ALLOWLIST` | Comma-separated, exact-match list of redirect URIs the primary Canva integration uses. The broker rejects any other `redirect_uri` on `/oauth/authorise`. |
 | `CORS_ORIGIN` | Comma-separated list of origins Canva uses to talk to the broker. Typically the iframe origin (`https://app-<lowercased-app-id>.canva-apps.com`) AND the editor origin (`https://www.canva.com`) — the editor fetches image bytes when a user drags an asset onto the canvas. Wildcard `*` is rejected. |
+| `RESOURCE_SPACE_ALLOWED_HOSTS` | Comma-separated approved hostname suffixes. Use `.resourcespace.com` for the hosted rollout; it accepts nested hosts such as `spotdev.free.resourcespace.com` but rejects lookalikes. Dynamically resolved tenants must use HTTPS on port 443 and public DNS. A suffix is a routing boundary, not proof of who operates the hostname. Outside development/test, at least this allowlist or `RESOURCE_SPACE_TENANTS_JSON` must be configured. |
+| `RESOURCE_SPACE_TENANTS_JSON` | JSON array of exact tenant objects (each with `id` and `baseUrl`). Use when a customer's original ResourceSpace-provided hostname is unavailable or for per-tenant overrides. May be `[]` when `RESOURCE_SPACE_ALLOWED_HOSTS=.resourcespace.com`. |
+| `STORAGE_ENCRYPTION_KEY` | Fernet key encrypting sensitive store fields (ResourceSpace session keys, user email) at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Required outside development/test. |
 
 Other env vars worth setting (not validated, but recommended):
 
 | Env var | What it does |
 | --- | --- |
+| `STORE_PRUNE_INTERVAL_SECONDS` | How often the background task prunes expired store records (default `3600`). Set `0` to disable proactive pruning (lazy prune on the next store transaction only). |
+| `CLIENT_IP_HEADER` | Header for the original client IP used in rate limits and SSO per-source quotas. Defaults to `x-real-ip` outside development/test; ignored unless the peer matches `TRUSTED_PROXY_HOSTS`. For `x-forwarded-for`, the rightmost untrusted hop is used (resists spoofing when proxies append rather than overwrite). |
+| `TRUSTED_PROXY_HOSTS` | CIDRs/addresses of trusted reverse proxies (default RFC1918+loopback+`100.64.0.0/10` in production). Required when `CLIENT_IP_HEADER` is set. Uvicorn `proxy_headers` stays disabled so this layer owns client resolution. |
+| `CLIENT_IP_LOG_KEY` | Optional HMAC key for client IP pseudonyms in SSO logs (defaults to `ASSET_SIGNING_SECRET`). |
+| `CLIENT_IP_LOG_DIAGNOSTICS` | When `true`, SSO logs include raw `transportPeer` for proxy tuning. Permitted only when `APP_ENV` is `development`, `test`, `staging`, or `uat`. |
 | `CANVA_UPLOAD_ALLOWED_HOSTS` | Comma-separated host allowlist for the Canva-supplied `source_url` on uploads. Leave empty to allow any public host (private IPs are blocked unconditionally). Capture real hosts from your first deploy's logs and tighten. |
 | `CANVA_UPLOAD_MAX_BYTES` | Cap on the size of a downloaded export in bytes. Default `52428800` (50 MiB). |
 | `CANVA_UPLOAD_MAX_IMAGE_PIXELS` | Pillow's anti-decompression-bomb limit. Default `50000000`. |
 | `OAUTH_CLIENTS_JSON` | Optional JSON array for additional broker clients. Each entry needs `clientId`, optional `integration`, and `redirectUriAllowlist`; the redirect allowlist is enforced per client. Leave unset for the current Canva-only deployment. |
 | `OAUTH_REFRESH_GRACE_SECONDS` | How long the just-rotated refresh token remains valid so two near-simultaneous refresh calls don't collide. Default `30`. |
+| `REFRESH_TOKEN_TTL_SECONDS` | Refresh-token lifetime, in seconds. Default `2592000` (30 days). A shorter value is prudent for UAT. |
+| `RESOURCE_SPACE_SSO_ENABLED` | Enables the ResourceSpace hosted-login (SSO) handoff and shows its button on the sign-in page. Default `false`. |
+| `RESOURCE_SPACE_SSO_SYSTEM_KEY` | The ResourceSpace `system` destination key used in the outbound handoff URL. Default `canva`. |
+| `RESOURCE_SPACE_SSO_PENDING_TTL_SECONDS` | How long a pending SSO handoff state is valid, in seconds. Default `600`. |
+| `RESOURCE_SPACE_SSO_REPLAY_RETENTION_SECONDS` | How long a used/expired handoff-state tombstone is retained after expiry, so replays and expiries stay distinguishable from unknown states in logs. Default `600`. |
+| `RESOURCE_SPACE_ASSET_ALLOWED_HOSTS` | Optional, comma-separated egress allowlist for the signed-asset proxy fetch. Empty means any public host is allowed (private IPs are blocked unconditionally). |
+| `RESOURCE_SPACE_ASSET_PROXY_MAX_BYTES` | Hard cap, in bytes, on a proxied asset response. Default `52428800` (50 MiB); the fetch streams and aborts if exceeded. |
 | `METRICS_TOKEN` | When set, `/metrics` returns the extended posture payload only to callers presenting `Authorization: Bearer <this>`. Empty means `/metrics` returns aggregate counts only (no posture data). |
 
 ### Discovering the redirect URI and Canva export hosts
@@ -220,8 +274,10 @@ Canva does not publish a single canonical `redirect_uri` or export host
 that fits every integration — they depend on how your Canva app is
 configured. The recommended workflow:
 
-1. Deploy the broker once with `APP_ENV=development` (validator off) and
-   permissive defaults.
+1. Run the broker locally with default `APP_ENV=development` (or use a
+   dedicated staging deploy with `APP_ENV=staging` and full security config).
+   Do **not** deploy to Railway with `APP_ENV=development` — startup refuses
+   that combination.
 2. Wire up your Canva app, complete one OAuth flow, and trigger one design
    export.
 3. Read the broker's structured logs for the exact `redirect_uri` Canva
@@ -305,6 +361,8 @@ forwards to `http://127.0.0.1:3001`.
 - [Deployment runbook](./docs/DEPLOYMENT-RUNBOOK.md)
 - [Deployment cheatsheet](./docs/DEPLOYMENT-CHEATSHEET.md)
 - [UAT validation template](./docs/UAT-VALIDATION.md)
+- [SSO setup steps](./docs/SSO-SETUP-STEPS.md): ResourceSpace SimpleSAML
+  plugin and Microsoft Entra configuration for the hosted-login handoff
 - [Licence](./LICENSE)
 - [Notice (contributor credits)](./NOTICE)
 

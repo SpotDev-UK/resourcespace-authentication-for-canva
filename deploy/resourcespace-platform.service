@@ -8,6 +8,7 @@ Type=simple
 User=resourcespace-platform
 Group=resourcespace-platform
 WorkingDirectory=/opt/resourcespace-platform
+Environment=APP_ENV=production
 EnvironmentFile=/etc/resourcespace-platform/broker.env
 ExecStart=/opt/resourcespace-platform/.venv/bin/python -m resourcespace_platform.main
 Restart=on-failure

@@ -20,7 +20,22 @@ from ._helpers import (
     _resourcespace_request_headers,
     _sort_collections,
     _to_iso_date,
+    pin_request,
 )
+
+
+def _first_reachable(pinned_urls: list[str], attempt: Any) -> Any:
+    """Call ``attempt(url)`` for each pinned URL in turn, moving to the next on a
+    connection error, and return the first response. Provides connection-level
+    fallback across a host's validated addresses (e.g. IPv6 then IPv4 where
+    outbound IPv6 is disabled). Raises the last connection error if none work."""
+    last_exc: httpx.HTTPError | None = None
+    for pinned_url in pinned_urls:
+        try:
+            return attempt(pinned_url)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            last_exc = exc
+    raise last_exc if last_exc is not None else httpx.ConnectError("no validated addresses")
 
 
 def _parse_jsonish_response(response: httpx.Response) -> Any:
@@ -44,12 +59,21 @@ def _parse_jsonish_response(response: httpx.Response) -> Any:
 
 
 def _fetch_jsonish_sync(url: str, *, integration: str | None = None) -> Any:
+    # Pin the connection to a validated public IP (closes the DNS-rebinding
+    # TOCTOU) while preserving the host for TLS SNI/cert and the Host header.
+    # trust_env=False: an env HTTPS_PROXY would tunnel via CONNECT and verify TLS
+    # against the pinned IP rather than the sni_hostname, breaking the pin.
+    pinned_urls, host_headers, extensions = pin_request(url)
     try:
         with httpx.Client(
-            timeout=30.0,
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            trust_env=False,
             headers=_resourcespace_request_headers(integration),
         ) as client:
-            response = client.get(url)
+            response = _first_reachable(
+                pinned_urls,
+                lambda u: client.get(u, headers=host_headers, extensions=extensions),
+            )
     except httpx.HTTPError as exc:
         raise ResourceSpaceError(
             "UPSTREAM_UNAVAILABLE",
@@ -62,12 +86,19 @@ def _fetch_jsonish_sync(url: str, *, integration: str | None = None) -> Any:
 def _post_jsonish_sync(
     url: str, data: dict[str, str], *, integration: str | None = None
 ) -> Any:
+    pinned_urls, host_headers, extensions = pin_request(url)
     try:
         with httpx.Client(
-            timeout=30.0,
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            trust_env=False,
             headers=_resourcespace_request_headers(integration),
         ) as client:
-            response = client.post(url, data=data)
+            response = _first_reachable(
+                pinned_urls,
+                lambda u: client.post(
+                    u, data=data, headers=host_headers, extensions=extensions
+                ),
+            )
     except httpx.HTTPError as exc:
         raise ResourceSpaceError(
             "UPSTREAM_UNAVAILABLE",
@@ -99,6 +130,55 @@ def _authenticate_live_tenant(
     if result in (False, "false", "", None):
         raise ResourceSpaceError("INVALID_CREDENTIALS", "Invalid ResourceSpace credentials.", 401)
     session_key = str(result)
+    return {
+        "tenant": tenant,
+        "user": {
+            "id": f"{tenant['id']}:{username.lower()}",
+            "username": username,
+            "displayName": username,
+            "role": "member",
+        },
+        "upstream": {
+            "mode": "live",
+            "sessionKey": session_key,
+            "authenticatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+    }
+
+
+def _validate_live_sessionkey(
+    tenant: dict[str, Any],
+    session_key: str,
+    username: str,
+    *,
+    integration: str | None = None,
+) -> dict[str, Any]:
+    """Validate a ResourceSpace session key handed back by the hosted-login
+    flow, then build the bridge session.
+
+    The signed ``get_resource_types`` call is the identity cross-check: RS
+    resolves the signing key from the ``user`` parameter, so a valid signature
+    proves the username and session key are a matching pair. The function takes
+    no parameters and returns the resource types available to the authenticated
+    user as a JSON array. Validity is defined strictly as "the response decodes
+    to a JSON list" (an empty list is still treated as authenticated). ResourceSpace
+    signals failure with HTTP 200 + a falsy body (``false`` / ``""`` / ``null``)
+    as often as with 401/403, so anything that is not a list is treated as a
+    failed validation and must not mint a token.
+    """
+    result = _call_live_api(
+        tenant=tenant,
+        username=username,
+        session_key=session_key,
+        params={"function": "get_resource_types"},
+        integration=integration,
+    )
+    if not isinstance(result, list):
+        raise ResourceSpaceError(
+            "UPSTREAM_SESSION_EXPIRED",
+            "ResourceSpace session key did not validate.",
+            401,
+        )
     return {
         "tenant": tenant,
         "user": {

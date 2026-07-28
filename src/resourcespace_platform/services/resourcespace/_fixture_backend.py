@@ -35,6 +35,45 @@ def _authenticate_fixture_tenant(base_url: str | None, username: str, password: 
     }
 
 
+def _authenticate_fixture_sso(
+    tenant: dict[str, Any],
+    session_key: str,
+    username: str,
+) -> dict[str, Any]:
+    """Resolve a fixture SSO session key to a fixture user.
+
+    Mirrors the live hosted-login validation: a session key that maps to a
+    known user (bound to the tenant the handoff was initiated against) yields a
+    session; anything else fails closed.
+    """
+    user_id = fixture.FIXTURE_SSO_SESSION_KEYS.get(session_key)
+    user = fixture.get_user_by_id(user_id) if user_id else None
+    if not user:
+        raise ResourceSpaceError(
+            "UPSTREAM_SESSION_EXPIRED", "Unknown fixture SSO session key.", 401
+        )
+    fixture_tenant = fixture.get_tenant_by_id(user["tenantId"])
+    if not fixture_tenant or normalize_base_url(tenant.get("baseUrl")) != normalize_base_url(
+        fixture_tenant["baseUrl"]
+    ):
+        raise ResourceSpaceError(
+            "UPSTREAM_SESSION_EXPIRED", "Fixture SSO session key is not valid for this tenant.", 401
+        )
+    return {
+        "tenant": fixture_tenant,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "displayName": user["displayName"],
+            "role": user["role"],
+        },
+        "upstream": {
+            "mode": "fixture",
+            "authenticatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+    }
+
+
 def _build_fixture_container(container: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": f"fixture:{container['id']}",

@@ -34,6 +34,7 @@ def _build_client(**overrides: str) -> Iterator[tuple[TestClient, str]]:
     os.remove(storage_path)
 
     env: dict[str, str] = {
+        "APP_ENV": "development",
         "PORT": "0",
         "BASE_URL": "http://testserver",
         "OAUTH_ISSUER": "http://testserver",

@@ -2,8 +2,9 @@
 
 Two-stage discipline:
 
-1. `create_config()` builds an immutable snapshot from env vars with safe
-   defaults that allow local dev with zero setup.
+1. `create_config()` builds an immutable snapshot from env vars. When
+   ``APP_ENV``/``NODE_ENV`` are unset, the environment defaults to
+   ``production`` (fail closed).
 2. `validate_config_for_environment()` runs at app startup and refuses to
    boot when `APP_ENV` is anything other than ``development``/``test`` and
    the deployer has not provided the security-critical config that the
@@ -21,8 +22,16 @@ from typing import Any, Mapping
 
 DEFAULT_PORT = 3001
 
+DEFAULT_APP_ENV = "production"
+
 DEV_LIKE_ENVIRONMENTS = frozenset({"development", "test"})
+CLIENT_IP_LOG_DIAGNOSTICS_ENVIRONMENTS = frozenset({"development", "test", "staging", "uat"})
 DEFAULT_OAUTH_CLIENT_INTEGRATION = "canva"
+# RFC1918 + loopback + CGNAT defaults for container-platform edge proxies
+# (Railway internal networking commonly uses 100.64.0.0/10).
+DEFAULT_TRUSTED_PROXY_HOSTS = (
+    "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,100.64.0.0/10"
+)
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -31,14 +40,28 @@ def _split_csv(value: str | None) -> list[str]:
     return [entry.strip() for entry in value.split(",") if entry.strip()]
 
 
-def _parse_tenant_json(value: str | None) -> list[dict[str, Any]]:
+def _parse_tenant_json(value: str | None) -> tuple[list[dict[str, Any]], str | None]:
     if not value:
-        return []
+        return [], None
     try:
         parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return []
-    return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError as exc:
+        return [], f"RESOURCE_SPACE_TENANTS_JSON must be valid JSON ({exc.msg})."
+    if not isinstance(parsed, list):
+        return [], "RESOURCE_SPACE_TENANTS_JSON must be a JSON array."
+    tenants: list[dict[str, Any]] = []
+    for index, entry in enumerate(parsed):
+        if not isinstance(entry, dict):
+            return [], f"RESOURCE_SPACE_TENANTS_JSON entry {index} must be an object."
+        tenant_id = str(entry.get("id") or "").strip()
+        base_url = str(entry.get("baseUrl") or entry.get("base_url") or "").strip()
+        if not tenant_id or not base_url:
+            return (
+                [],
+                f"RESOURCE_SPACE_TENANTS_JSON entry {index} must include id and baseUrl.",
+            )
+        tenants.append(entry)
+    return tenants, None
 
 
 def _parse_oauth_clients_json(
@@ -120,6 +143,7 @@ class OAuthConfig:
     signed_url_ttl_seconds: int
     auth_code_ttl_seconds: int
     refresh_grace_seconds: int
+    refresh_token_ttl_seconds: int
 
 
 @dataclass(frozen=True)
@@ -141,7 +165,14 @@ class ResourceSpaceConfig:
     mode: str
     allowed_hosts: list[str]
     tenants: list[dict[str, Any]]
+    tenants_parse_error: str | None
     container_source: str
+    asset_allowed_hosts: list[str]
+    asset_proxy_max_bytes: int
+    sso_enabled: bool
+    sso_system_key: str
+    sso_pending_ttl_seconds: int
+    sso_replay_retention_seconds: int
 
 
 @dataclass(frozen=True)
@@ -170,6 +201,12 @@ class AppConfig:
     base_url: str
     cors_origin: str
     storage_path: str
+    storage_encryption_key: str
+    store_prune_interval_seconds: int
+    client_ip_header: str
+    trusted_proxy_hosts: list[str]
+    client_ip_log_key: str
+    client_ip_log_diagnostics: bool
     oauth: OAuthConfig
     signing: SigningConfig
     rate_limit: RateLimitConfig
@@ -186,7 +223,16 @@ def _default_storage_path() -> str:
 
 def create_config(env: Mapping[str, str] | None = None) -> AppConfig:
     """Build an immutable config snapshot from env vars."""
-    source = env if env is not None else os.environ
+    if env is not None:
+        source: Mapping[str, str] = dict(env)
+        if (
+            "APP_ENV" not in source
+            and "NODE_ENV" not in source
+            and os.environ.get("PYTEST_CURRENT_TEST")
+        ):
+            source = {**{"APP_ENV": "development"}, **dict(env)}
+    else:
+        source = os.environ
     port = int(source.get("PORT", DEFAULT_PORT))
     base_url = source.get("BASE_URL", f"http://localhost:{port}")
     oauth_client_id = source.get("OAUTH_CLIENT_ID", "canva-dev-app")
@@ -206,13 +252,38 @@ def create_config(env: Mapping[str, str] | None = None) -> AppConfig:
         else {}
     )
     oauth_clients.update(extra_oauth_clients)
+    environment = (
+        source.get("APP_ENV") or source.get("NODE_ENV") or DEFAULT_APP_ENV
+    ).strip()
+    tenants, tenants_parse_error = _parse_tenant_json(source.get("RESOURCE_SPACE_TENANTS_JSON"))
+    default_client_ip_header = "" if environment in DEV_LIKE_ENVIRONMENTS else "x-real-ip"
+    default_trusted_proxy_hosts = (
+        _split_csv(DEFAULT_TRUSTED_PROXY_HOSTS)
+        if environment not in DEV_LIKE_ENVIRONMENTS
+        else []
+    )
+    client_ip_header = source.get("CLIENT_IP_HEADER", default_client_ip_header).strip().lower()
+    trusted_proxy_raw = source.get("TRUSTED_PROXY_HOSTS")
+    trusted_proxy_hosts = (
+        _split_csv(trusted_proxy_raw)
+        if trusted_proxy_raw is not None
+        else default_trusted_proxy_hosts
+    )
+    client_ip_log_key = source.get("CLIENT_IP_LOG_KEY", "").strip()
+    client_ip_log_diagnostics = _parse_bool(source.get("CLIENT_IP_LOG_DIAGNOSTICS"))
 
     return AppConfig(
-        environment=source.get("APP_ENV", source.get("NODE_ENV", "development")),
+        environment=environment,
         port=port,
         base_url=base_url,
         cors_origin=source.get("CORS_ORIGIN", "*"),
         storage_path=source.get("STORAGE_PATH", _default_storage_path()),
+        storage_encryption_key=source.get("STORAGE_ENCRYPTION_KEY", ""),
+        store_prune_interval_seconds=int(source.get("STORE_PRUNE_INTERVAL_SECONDS", 3600)),
+        client_ip_header=client_ip_header,
+        trusted_proxy_hosts=trusted_proxy_hosts,
+        client_ip_log_key=client_ip_log_key,
+        client_ip_log_diagnostics=client_ip_log_diagnostics,
         oauth=OAuthConfig(
             issuer=source.get("OAUTH_ISSUER", base_url),
             client_id=oauth_client_id,
@@ -224,6 +295,9 @@ def create_config(env: Mapping[str, str] | None = None) -> AppConfig:
             signed_url_ttl_seconds=int(source.get("SIGNED_URL_TTL_SECONDS", 300)),
             auth_code_ttl_seconds=int(source.get("AUTH_CODE_TTL_SECONDS", 300)),
             refresh_grace_seconds=int(source.get("OAUTH_REFRESH_GRACE_SECONDS", 30)),
+            refresh_token_ttl_seconds=int(
+                source.get("REFRESH_TOKEN_TTL_SECONDS", 30 * 24 * 60 * 60)
+            ),
         ),
         signing=SigningConfig(
             asset_secret=source.get("ASSET_SIGNING_SECRET", "development-signing-secret"),
@@ -238,10 +312,26 @@ def create_config(env: Mapping[str, str] | None = None) -> AppConfig:
             window_ms=int(source.get("RATE_LIMIT_WINDOW_MS", 60_000)),
         ),
         resource_space=ResourceSpaceConfig(
-            mode=source.get("RESOURCE_SPACE_MODE", "fixture"),
+            # Normalise so case/whitespace variants ("Live", "live ") cannot
+            # slip past the mode-keyed SSRF guard and startup validation while
+            # still dispatching to the live backend.
+            mode=source.get("RESOURCE_SPACE_MODE", "fixture").strip().lower(),
             allowed_hosts=_split_csv(source.get("RESOURCE_SPACE_ALLOWED_HOSTS")),
-            tenants=_parse_tenant_json(source.get("RESOURCE_SPACE_TENANTS_JSON")),
+            tenants=tenants,
+            tenants_parse_error=tenants_parse_error,
             container_source=source.get("RESOURCE_SPACE_CONTAINER_SOURCE", "user_collections"),
+            asset_allowed_hosts=_split_csv(source.get("RESOURCE_SPACE_ASSET_ALLOWED_HOSTS")),
+            asset_proxy_max_bytes=int(
+                source.get("RESOURCE_SPACE_ASSET_PROXY_MAX_BYTES", 50 * 1024 * 1024)
+            ),
+            sso_enabled=_parse_bool(source.get("RESOURCE_SPACE_SSO_ENABLED")),
+            sso_system_key=source.get("RESOURCE_SPACE_SSO_SYSTEM_KEY", "canva"),
+            sso_pending_ttl_seconds=int(
+                source.get("RESOURCE_SPACE_SSO_PENDING_TTL_SECONDS", 600)
+            ),
+            sso_replay_retention_seconds=int(
+                source.get("RESOURCE_SPACE_SSO_REPLAY_RETENTION_SECONDS", 600)
+            ),
         ),
         upload=UploadConfig(
             allowed_hosts=_split_csv(source.get("CANVA_UPLOAD_ALLOWED_HOSTS")),
@@ -266,6 +356,14 @@ def validate_config_for_environment(config: AppConfig) -> None:
     of ``APP_ENV`` is treated as production-grade and held to the same
     security bar.
     """
+    if os.environ.get("RAILWAY_ENVIRONMENT") and config.environment in DEV_LIKE_ENVIRONMENTS:
+        raise ConfigValidationError(
+            "Refusing to start on Railway with APP_ENV='%s'. Set APP_ENV to "
+            "production, staging, or uat and provide the required security "
+            "configuration. Discovery runs belong on localhost, not a deployed "
+            "Railway service." % config.environment
+        )
+
     if config.environment in DEV_LIKE_ENVIRONMENTS:
         return
 
@@ -273,6 +371,14 @@ def validate_config_for_environment(config: AppConfig) -> None:
 
     if config.oauth.clients_parse_error:
         problems.append(config.oauth.clients_parse_error)
+    if config.resource_space.tenants_parse_error:
+        problems.append(config.resource_space.tenants_parse_error)
+    elif not config.resource_space.tenants and not config.resource_space.allowed_hosts:
+        problems.append(
+            "Configure at least one approved ResourceSpace tenant outside development/test: "
+            "set RESOURCE_SPACE_TENANTS_JSON to a non-empty array of exact tenant records "
+            "or RESOURCE_SPACE_ALLOWED_HOSTS to one or more approved hostname suffixes."
+        )
     if config.signing.request_verification_mode != "required":
         problems.append(
             "CANVA_REQUEST_VERIFICATION_MODE must be 'required' outside development "
@@ -312,6 +418,45 @@ def validate_config_for_environment(config: AppConfig) -> None:
             "CORS_ORIGIN must be set to one or more specific origins, not '*' "
             "(comma-separated, e.g. "
             "https://app-<lowercased-app-id>.canva-apps.com,https://www.canva.com)."
+        )
+    if config.resource_space.mode not in ("fixture", "live"):
+        problems.append(
+            "RESOURCE_SPACE_MODE must be 'fixture' or 'live' (got '%s'). Any other value is "
+            "treated as live at runtime, which is easy to misconfigure." % config.resource_space.mode
+        )
+    if not config.storage_encryption_key:
+        problems.append(
+            "STORAGE_ENCRYPTION_KEY must be set outside development/test. Generate one with "
+            "`python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"`."
+        )
+    else:
+        try:
+            from cryptography.fernet import Fernet
+
+            Fernet(config.storage_encryption_key.encode("ascii"))
+        except (ValueError, TypeError):
+            problems.append(
+                "STORAGE_ENCRYPTION_KEY must be a url-safe base64-encoded 32-byte Fernet key. "
+                "Generate one with "
+                "`python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"`."
+            )
+
+    if config.client_ip_header and not config.trusted_proxy_hosts:
+        problems.append(
+            "TRUSTED_PROXY_HOSTS must list the CIDRs or addresses of reverse proxies "
+            "that may set CLIENT_IP_HEADER (%s). The header is ignored for direct "
+            "connections to prevent client IP spoofing." % config.client_ip_header
+        )
+
+    if (
+        config.client_ip_log_diagnostics
+        and config.environment.lower() not in CLIENT_IP_LOG_DIAGNOSTICS_ENVIRONMENTS
+    ):
+        problems.append(
+            "CLIENT_IP_LOG_DIAGNOSTICS is permitted only when APP_ENV is one of "
+            "development, test, staging, or uat (currently '%s'). It logs raw "
+            "transportPeer addresses; disable before production deploy."
+            % config.environment
         )
 
     if problems:
