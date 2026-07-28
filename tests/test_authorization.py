@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import tempfile
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -243,3 +245,55 @@ def test_unknown_tenant_url_is_rejected_without_crashing(
     # No redirect to the client with a code must happen.
     assert "location" not in {k.lower() for k in response.headers.keys()}
     _ = verifier  # silence lint; PKCE challenge is all we need here
+
+
+def _password_authorize(
+    client: TestClient,
+    *,
+    code_challenge: str | None = "present",
+    storage_path: str | None = None,
+) -> Any:
+    verifier, valid_challenge = _pkce_pair()
+    data: dict[str, str] = {
+        "client_id": "canva-dev-app",
+        "redirect_uri": "https://example.com/oauth/callback",
+        "response_type": "code",
+        "state": "state-pkce-check",
+        "scope": "openid dam:read",
+        "code_challenge_method": "S256",
+        "tenant_url": "https://acme.demo.resourcespace.local",
+        "username": "alice",
+        "password": "alice-password",
+    }
+    if code_challenge != "omit":
+        if code_challenge == "present":
+            data["code_challenge"] = valid_challenge
+        elif code_challenge is not None:
+            data["code_challenge"] = code_challenge
+    response = client.post("/oauth/authorise", data=data, follow_redirects=False)
+    if storage_path is not None:
+        store = json.loads(Path(storage_path).read_text())
+        assert store["authorizationCodes"] == {}
+    return response
+
+
+@pytest.mark.parametrize(
+    "challenge",
+    [
+        "omit",
+        "too-short",
+        "A" * 44,
+        ("A" * 42) + "B",
+    ],
+)
+def test_password_authorize_rejects_invalid_pkce_before_authentication(
+    harness: tuple[TestClient, str],
+    challenge: str,
+) -> None:
+    client, storage_path = harness
+    response = _password_authorize(
+        client, code_challenge=challenge, storage_path=storage_path
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    assert "location" not in {k.lower() for k in response.headers.keys()}

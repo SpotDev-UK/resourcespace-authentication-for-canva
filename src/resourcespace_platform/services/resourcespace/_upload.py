@@ -11,7 +11,7 @@ from ._helpers import (
     ResourceSpaceError,
     _broker_integration_from_session,
     _build_signed_api_url,
-    _canonical_pattern,
+    _host_matches_strict,
     _is_private_ip,
     _resourcespace_request_headers,
     canonical_ascii_host,
@@ -72,10 +72,9 @@ def _validate_export_url(url: str, config: AppConfig) -> None:
             400,
         )
 
-    allowed_hosts = [_canonical_pattern(h) for h in config.upload.allowed_hosts]
-    if allowed_hosts:
-        if host not in allowed_hosts and not any(
-            host.endswith("." + h.lstrip(".")) for h in allowed_hosts if h.startswith(".")
+    if config.upload.allowed_hosts:
+        if not any(
+            _host_matches_strict(host, pattern) for pattern in config.upload.allowed_hosts
         ):
             raise ResourceSpaceError(
                 "FORBIDDEN",

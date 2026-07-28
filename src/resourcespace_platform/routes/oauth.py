@@ -241,8 +241,17 @@ async def oauth_authorize_post(request: Request) -> Response:
             config, 400, "INVALID_REQUEST", "OAuth request parameters exceed length limits."
         )
 
+    code_challenge = body.get("code_challenge")
+    if not code_challenge or not _is_valid_s256_code_challenge(code_challenge):
+        return json_error(
+            config,
+            400,
+            "INVALID_REQUEST",
+            "A valid S256 code_challenge is required.",
+        )
+
     # Branch on the auth method only after the shared OAuth-request validation
-    # above (client/redirect allowlist + PKCE method). `password` is the default.
+    # above (client/redirect allowlist + PKCE). `password` is the default.
     if (body.get("auth_method") or "password").strip().lower() == "sso":
         return _begin_sso_authorize(
             request,
@@ -251,6 +260,7 @@ async def oauth_authorize_post(request: Request) -> Response:
             redirect_uri=redirect_uri,
             scope=scope,
             state=state,
+            code_challenge=code_challenge,
             code_challenge_method=code_challenge_method,
         )
 
@@ -259,7 +269,7 @@ async def oauth_authorize_post(request: Request) -> Response:
             client_id=client_id,
             redirect_uri=redirect_uri,
             scope=scope,
-            code_challenge=body.get("code_challenge"),
+            code_challenge=code_challenge,
             code_challenge_method=code_challenge_method,
             tenant_base_url=body.get("tenant_url"),
             username=body.get("username", ""),
@@ -356,6 +366,7 @@ def _begin_sso_authorize(
     redirect_uri: str,
     scope: str,
     state: str,
+    code_challenge: str,
     code_challenge_method: str,
 ) -> Response:
     deps = request.app.state.deps
@@ -369,18 +380,6 @@ def _begin_sso_authorize(
             form_values=body,
         )
         return HTMLResponse(status_code=400, content=html, headers=cors_headers(config))
-
-    code_challenge = body.get("code_challenge")
-    if not code_challenge or not _is_valid_s256_code_challenge(code_challenge):
-        # Require a well-formed PKCE challenge to be present (not just the
-        # method) so a challenge-less or malformed initiation cannot drive a
-        # wasted unauthenticated handoff or persist junk into pending state.
-        return json_error(
-            config,
-            400,
-            "INVALID_REQUEST",
-            "A valid S256 code_challenge is required for the SSO flow.",
-        )
 
     # Preserve the established SSO error contract before tenant resolution.
     # The production resolver also rejects plaintext dynamic tenants, but doing

@@ -1515,6 +1515,33 @@ def test_host_matches_strict_bare_entry_is_exact_only() -> None:
     assert _host_matches_strict("notexample.com", ".example.com") is False
 
 
+def test_validate_export_url_dot_suffix_allows_apex_and_subdomains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._upload._is_private_ip",
+        lambda _host: False,
+    )
+    config = create_config({"CANVA_UPLOAD_ALLOWED_HOSTS": ".example.com"})
+    _validate_export_url("https://example.com/export.png", config)
+    _validate_export_url("https://sub.example.com/export.png", config)
+    with pytest.raises(ResourceSpaceError):
+        _validate_export_url("https://notexample.com/export.png", config)
+
+
+def test_validate_export_url_bare_host_is_exact_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._upload._is_private_ip",
+        lambda _host: False,
+    )
+    config = create_config({"CANVA_UPLOAD_ALLOWED_HOSTS": "cdn.example.com"})
+    _validate_export_url("https://cdn.example.com/export.png", config)
+    with pytest.raises(ResourceSpaceError):
+        _validate_export_url("https://attacker.cdn.example.com/export.png", config)
+
+
 def test_pin_request_allowlist_rejects_non_allowlisted_subdomain() -> None:
     # Allowlist rejection happens on the canonical host before any DNS lookup.
     with pytest.raises(ResourceSpaceError) as excinfo:
