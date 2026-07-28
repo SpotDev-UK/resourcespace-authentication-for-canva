@@ -411,14 +411,71 @@ class AuthService:
 
         return self._store.update(_updater)
 
-    def consume_pending_sso_state(self, handoff_state: str) -> dict[str, Any]:
-        """Atomically classify and consume a pending SSO handoff state.
+    def _classify_pending_sso_record(
+        self, record: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Classify a pending SSO record without mutating store state."""
+        if not record:
+            return {"status": "invalid"}
+        if record.get("usedAt"):
+            return {"status": "replayed", "record": record}
+        if _now_ms() > record["expiresAt"]:
+            return {"status": "expired", "record": record}
+        return {"status": "active", "record": record}
 
-        Returns a dict with ``status`` in {invalid, expired, replayed, valid}
-        and, for the non-invalid cases, the ``record``. A valid state is marked
-        used (its ``usedAt`` set) inside the same transaction, so a concurrent
-        replay cannot race through. Tombstones are retained until ``purgeAt`` so
-        replay and expiry stay distinguishable from an unknown state.
+    def inspect_pending_sso_state(self, handoff_state: str) -> dict[str, Any]:
+        """Non-mutating lookup of a pending SSO handoff state."""
+        state = self._store.read()
+        record = state.get("pendingSsoStates", {}).get(handoff_state)
+        return self._classify_pending_sso_record(record)
+
+    def complete_sso_authorization(
+        self,
+        handoff_state: str,
+        *,
+        session: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically consume an active handoff state and mint an authorization code.
+
+        Re-checks that the state is still unused and unexpired inside the store
+        transaction so validation failures before this call leave the state
+        retryable and concurrent callbacks cannot mint multiple codes.
+        """
+
+        def _updater(state: dict[str, dict[str, Any]]) -> dict[str, Any]:
+            self._prune(state)
+            record = state["pendingSsoStates"].get(handoff_state)
+            classified = self._classify_pending_sso_record(record)
+            status = classified["status"]
+            if status != "active":
+                return classified
+
+            record = classified["record"]
+            client_id = record["clientId"]
+            integration = _integration_for_client_id(self._config, client_id)
+            session_with_metadata = _stamp_broker_session_metadata(
+                session,
+                client_id=client_id,
+                integration=integration,
+            )
+            code = self._mint_authorization_code(
+                state,
+                client_id=client_id,
+                redirect_uri=record["redirectUri"],
+                scope=record["scope"],
+                code_challenge=record["codeChallenge"],
+                code_challenge_method=record["codeChallengeMethod"],
+                session=session_with_metadata,
+            )
+            record["usedAt"] = _now_ms()
+            return {"status": "valid", "code": code, "record": record}
+
+        return self._store.update(_updater)
+
+    def consume_pending_sso_state(self, handoff_state: str) -> dict[str, Any]:
+        """Deprecated: prefer inspect + complete_sso_authorization.
+
+        Kept for compatibility with tests that exercise state classification only.
         """
 
         def _updater(state: dict[str, dict[str, Any]]) -> dict[str, Any]:

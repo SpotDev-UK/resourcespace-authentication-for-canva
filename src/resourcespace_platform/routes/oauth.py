@@ -505,7 +505,7 @@ async def oauth_sso_callback(request: Request) -> Response:
             reason="sso_state_invalid",
         )
 
-    consumed = deps.auth_service.consume_pending_sso_state(handoff_state)
+    consumed = deps.auth_service.inspect_pending_sso_state(handoff_state)
     status = consumed["status"]
     if status == "invalid":
         log.info(
@@ -535,6 +535,19 @@ async def oauth_sso_callback(request: Request) -> Response:
             reason="sso_state_replay",
         )
 
+    if status != "active":
+        # Defensive: inspect only returns invalid/expired/replayed/active.
+        log.info(
+            "oauth_sso_state_invalid",
+            {"correlationId": correlation_id, "reason": "unexpected_state"},
+        )
+        return _sso_json(
+            config, 400,
+            "This sign-in link is not valid. Please start again from Canva.",
+            reason="sso_state_invalid",
+        )
+
+    record = consumed["record"]
     tenant = record["tenant"]
     client_id = record["clientId"]
     redirect_uri = record["redirectUri"]
@@ -590,14 +603,30 @@ async def oauth_sso_callback(request: Request) -> Response:
             reason="resourcespace_token_validation_failed",
         )
 
-    code = deps.auth_service.begin_authorization_from_session(
-        client_id=client_id,
-        redirect_uri=redirect_uri,
-        scope=record["scope"],
-        code_challenge=record["codeChallenge"],
-        code_challenge_method=record["codeChallengeMethod"],
+    completed = deps.auth_service.complete_sso_authorization(
+        handoff_state,
         session=session,
     )
+    completion_status = completed["status"]
+    if completion_status == "replayed":
+        log.info("oauth_sso_state_replay", {"correlationId": correlation_id})
+        return _sso_json(
+            config, 400,
+            "This sign-in link has already been used. Please start again from Canva.",
+            reason="sso_state_replay",
+        )
+    if completion_status != "valid":
+        log.info(
+            "oauth_sso_state_invalid",
+            {"correlationId": correlation_id, "reason": completion_status},
+        )
+        return _sso_json(
+            config, 400,
+            "This sign-in link is not valid. Please start again from Canva.",
+            reason="sso_state_invalid",
+        )
+
+    code = completed["code"]
     # The authorization code is minted and bound to the Canva request. ResourceSpace
     # reads redirectUrl from this JSON response and (with the SSO redirect patch)
     # sends the browser popup to that URL via HTTP 303.

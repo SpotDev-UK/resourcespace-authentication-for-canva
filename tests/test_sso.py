@@ -348,24 +348,33 @@ def test_sso_callback_replayed_state_is_rejected() -> None:
 
 
 def test_sso_callback_missing_username_is_rejected() -> None:
-    for client, _ in _build_client(RESOURCE_SPACE_SSO_ENABLED="true"):
+    for client, storage_path in _build_client(RESOURCE_SPACE_SSO_ENABLED="true"):
         handoff_state, _verifier, _redirect_uri = _run_full_sso_initiation(client)
 
         response = _sso_callback(client, handoff_state=handoff_state, username=None)
         assert response.status_code == 400
         assert response.json()["reason"] == "sso_handoff_failed"
+        record = _read_store(storage_path)["pendingSsoStates"][handoff_state]
+        assert record.get("usedAt") is None
+
+        retry = _sso_callback(client, handoff_state=handoff_state)
+        assert retry.status_code == 200, retry.text
 
 
 # --- 14. Missing sessionkey -> validation failure ----------------------------
 
 
 def test_sso_callback_missing_sessionkey_is_rejected() -> None:
-    for client, _ in _build_client(RESOURCE_SPACE_SSO_ENABLED="true"):
+    for client, storage_path in _build_client(RESOURCE_SPACE_SSO_ENABLED="true"):
         handoff_state, _verifier, _redirect_uri = _run_full_sso_initiation(client)
 
         response = _sso_callback(client, handoff_state=handoff_state, session_key=None)
         assert response.status_code == 401, response.text
         assert response.json()["reason"] == "resourcespace_token_validation_failed"
+        assert _read_store(storage_path)["pendingSsoStates"][handoff_state].get("usedAt") is None
+
+        retry = _sso_callback(client, handoff_state=handoff_state)
+        assert retry.status_code == 200, retry.text
 
 
 # --- 15. Invalid sessionkey -> validation failure (no code minted) -----------
@@ -380,6 +389,10 @@ def test_sso_callback_invalid_sessionkey_is_rejected() -> None:
         assert response.json()["reason"] == "resourcespace_token_validation_failed"
         # A failed validation must not mint a broker authorization code.
         assert _read_store(storage_path)["authorizationCodes"] == {}
+        assert _read_store(storage_path)["pendingSsoStates"][handoff_state].get("usedAt") is None
+
+        retry = _sso_callback(client, handoff_state=handoff_state)
+        assert retry.status_code == 200, retry.text
 
 
 # --- 16. GET callback is not allowed -----------------------------------------
@@ -628,3 +641,30 @@ def test_sso_initiation_global_cap_counts_only_active_pending(
         overflow = _initiate_sso(client, challenge=challenge, canva_state="active-overflow")
         assert overflow.status_code == 503, overflow.text
         assert overflow.json()["error"]["code"] == "SSO_CAPACITY"
+
+
+def test_sso_callback_concurrent_completion_mints_single_authorization_code() -> None:
+    import threading
+
+    for client, storage_path in _build_client(RESOURCE_SPACE_SSO_ENABLED="true"):
+        handoff_state, _verifier, _redirect_uri = _run_full_sso_initiation(client)
+        results: list[Any] = []
+        barrier = threading.Barrier(2)
+
+        def _post() -> None:
+            barrier.wait()
+            results.append(_sso_callback(client, handoff_state=handoff_state))
+
+        threads = [threading.Thread(target=_post), threading.Thread(target=_post)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        status_codes = sorted(response.status_code for response in results)
+        assert status_codes == [200, 400]
+        assert sum(1 for response in results if response.json().get("reason") == "sso_state_replay") == 1
+
+        store = _read_store(storage_path)
+        assert len(store["authorizationCodes"]) == 1
+        assert store["pendingSsoStates"][handoff_state]["usedAt"] is not None
