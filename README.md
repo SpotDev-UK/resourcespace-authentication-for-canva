@@ -63,9 +63,7 @@ for a user to authenticate against their ResourceSpace tenant:
   hands the browser off to the tenant's own login page
   (`pages/user/user_api_session.php`), where SAML, MFA, or an existing
   session can complete the sign-in, then ResourceSpace posts the result back
-  to the broker. Off by default. See
-  [SSO setup steps](./docs/SSO-SETUP-STEPS.md) for the tenant/Entra
-  configuration this depends on.
+  to the broker. Off by default.
 
 ---
 
@@ -361,8 +359,6 @@ forwards to `http://127.0.0.1:3001`.
 - [Deployment runbook](./docs/DEPLOYMENT-RUNBOOK.md)
 - [Deployment cheatsheet](./docs/DEPLOYMENT-CHEATSHEET.md)
 - [UAT validation template](./docs/UAT-VALIDATION.md)
-- [SSO setup steps](./docs/SSO-SETUP-STEPS.md): ResourceSpace SimpleSAML
-  plugin and Microsoft Entra configuration for the hosted-login handoff
 - [Licence](./LICENSE)
 - [Notice (contributor credits)](./NOTICE)
 

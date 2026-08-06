@@ -120,9 +120,7 @@ remain restricted to HTTPS on port 443, public DNS and a same-origin API URL.
   default `52428800` (50 MiB)
 - `METRICS_TOKEN`
 
-See [`.env.example`](../.env.example) for the full annotated list. For the
-tenant-side SAML/Entra configuration the SSO handoff depends on, see
-[SSO setup steps](./SSO-SETUP-STEPS.md).
+See [`.env.example`](../.env.example) for the full annotated list.
 
 ## ResourceSpace SSO redirect patch (deployment dependency)
 

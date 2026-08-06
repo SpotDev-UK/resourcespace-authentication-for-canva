@@ -31,7 +31,7 @@ quick-start version see [Deployment Cheatsheet](./DEPLOYMENT-CHEATSHEET.md).
 - Manual OAuth helper returns `404`
 - ResourceSpace SSO handoff (`RESOURCE_SPACE_SSO_ENABLED`) left at its
   default of `false` unless the tenant's hosted-login setup has been
-  validated (see [SSO setup steps](./SSO-SETUP-STEPS.md))
+  validated.
 
 ## Required Environment Variables
 
@@ -283,8 +283,7 @@ current UAT-grade deployment:
 
 For the tenant-side SAML/Entra configuration this handoff depends on (the
 ResourceSpace SimpleSAML plugin wiring and the Microsoft Entra Enterprise
-Application), see [SSO setup steps](./SSO-SETUP-STEPS.md). The SAML sign-in
-was confirmed live against the SpotDev test tenant on 21 Jul 2026.
+Application).
 
 ## ResourceSpace Login POST Hardening
 
@@ -518,9 +517,8 @@ self-heal as tokens rotate.
   additional integrations; if set, verify each client's redirect allowlist is
   client-specific
 - Leave `RESOURCE_SPACE_SSO_ENABLED=false` until live browser SSO UAT passes
-  (303 redirect, unchanged `state`, working session) and Dan's ResourceSpace SSO
-  redirect patch is confirmed on the tenant (re-check after RS upgrades); see
-  [SSO setup steps](./SSO-SETUP-STEPS.md) and the deployment runbook
+  (303 redirect, unchanged `state`, working session) and ResourceSpace SSO
+  redirect patch is confirmed on the tenant (re-check after RS upgrades).
 - If enabling SSO, confirm distinct `resolvedClientHostHash` values in
   `oauth_sso_initiated` from two end-user networks and stable callback source
   identity in `oauth_sso_callback_received` (see Deployment runbook) and review
