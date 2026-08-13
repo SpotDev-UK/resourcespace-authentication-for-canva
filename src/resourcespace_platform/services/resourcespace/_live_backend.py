@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -122,9 +123,16 @@ def _authenticate_live_tenant(
     from .service import get_configured_tenant
 
     tenant = get_configured_tenant(config, base_url)
+    # ResourceSpace's execute_api_call() only reads QUERY_STRING or a POST
+    # field named `query`. Loose form fields are ignored and login returns
+    # an empty HTTP 200, which we map to INVALID_CREDENTIALS.
     result = _post_jsonish_sync(
         tenant["apiUrl"],
-        {"function": "login", "username": username, "password": password},
+        {
+            "query": urlencode(
+                {"function": "login", "username": username, "password": password}
+            )
+        },
         integration=integration,
     )
     if result in (False, "false", "", None):

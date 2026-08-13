@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -503,9 +504,13 @@ def test_live_login_uses_post_body_and_canva_user_agent(
     assert "secret-password" not in captured["url"]
     assert "alice%40example.com" not in captured["url"]
     assert captured["post_kwargs"]["data"] == {
-        "function": "login",
-        "username": "alice@example.com",
-        "password": "secret-password",
+        "query": urlencode(
+            {
+                "function": "login",
+                "username": "alice@example.com",
+                "password": "secret-password",
+            }
+        )
     }
     assert captured["client_kwargs"]["headers"]["User-Agent"] == RESOURCE_SPACE_CANVA_USER_AGENT
     assert session["upstream"]["sessionKey"] == "session-api-key"
@@ -575,7 +580,15 @@ def test_live_login_omits_canva_user_agent_without_trusted_canva_integration(
     assert captured["post_kwargs"]["headers"]["Host"] == "api.curated.resourcespace.example.com"
     assert captured["post_kwargs"]["extensions"]["sni_hostname"] == "api.curated.resourcespace.example.com"
     assert "secret-password" not in captured["url"]
-    assert captured["post_kwargs"]["data"]["password"] == "secret-password"
+    assert captured["post_kwargs"]["data"] == {
+        "query": urlencode(
+            {
+                "function": "login",
+                "username": "alice@example.com",
+                "password": "secret-password",
+            }
+        )
+    }
     assert captured["client_kwargs"]["headers"] == {}
     assert session["upstream"]["sessionKey"] == "session-api-key"
 
