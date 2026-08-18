@@ -149,15 +149,16 @@ code. Example:
 
 ## ResourceSpace Hosted-Login (SSO)
 
-As an alternative to the password form above, the sign-in page can hand the
-browser off to the ResourceSpace tenant's own login page, so the tenant's
-SAML, MFA, or an existing browser session completes the sign-in instead of
-the user typing a password into the broker's popup. Off by default.
+When enabled, the sign-in page collects only the ResourceSpace URL. **Sign
+in** hands the browser off to the tenant's own login page, so the tenant's
+SAML, MFA, native password, or an existing browser session completes
+sign-in. Username and password are not collected in the Canva popup. Off
+by default.
 
-- `RESOURCE_SPACE_SSO_ENABLED=false` (default): the sign-in page shows only
-  the password form and `POST /oauth/sso/callback` returns `404`. Set to
-  `true` to show the "Sign in with single sign-on" button and enable the
-  callback.
+- `RESOURCE_SPACE_SSO_ENABLED=false` (default): the sign-in page shows the
+  password form and `POST /oauth/sso/callback` returns `404`. Set to
+  `true` to show the hosted-login **Sign in** page (ResourceSpace URL only)
+  and enable the callback.
 - `POST /oauth/authorise` accepts an `auth_method` form field: `password`
   (default) or `sso`.
 - On `auth_method=sso`, the broker redirects to

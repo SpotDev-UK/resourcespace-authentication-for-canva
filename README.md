@@ -53,17 +53,19 @@ not proof of who operates a hostname.
 
 ### Sign-in methods
 
-Independently of `RESOURCE_SPACE_MODE`, the OAuth popup supports two ways
-for a user to authenticate against their ResourceSpace tenant:
+Independently of `RESOURCE_SPACE_MODE`, the OAuth popup authenticates against
+the ResourceSpace tenant as follows:
 
-- **Password** (default): the popup collects a ResourceSpace username and
-  password directly.
-- **ResourceSpace hosted-login (SSO)**: set `RESOURCE_SPACE_SSO_ENABLED=true`
-  to show a second "Sign in with single sign-on" button on the popup. It
-  hands the browser off to the tenant's own login page
-  (`pages/user/user_api_session.php`), where SAML, MFA, or an existing
-  session can complete the sign-in, then ResourceSpace posts the result back
-  to the broker. Off by default.
+- **ResourceSpace hosted-login** (when `RESOURCE_SPACE_SSO_ENABLED=true`):
+  the popup collects only the ResourceSpace URL. **Sign in** sends the
+  browser to the tenant's own login page
+  (`pages/user/user_api_session.php`), where SAML, MFA, native password, or
+  an existing session can complete sign-in. ResourceSpace then posts the
+  result back to the broker.
+- **Password** (when `RESOURCE_SPACE_SSO_ENABLED` is unset or `false`): the
+  popup collects a ResourceSpace username and password directly. This remains
+  the flag-off fallback; `POST /oauth/authorise` still accepts the password
+  path for tests and rollback.
 
 ---
 
@@ -73,9 +75,9 @@ OAuth:
 
 - `GET /oauth/authorise` (also `GET /oauth/authorize` — redirects to the `-ise` spelling)
 - `POST /oauth/authorise` (also `POST /oauth/authorize`): accepts an
-  `auth_method` form field: `password` (default) or `sso` (hosted-login
-  handoff, only offered on the sign-in page when
-  `RESOURCE_SPACE_SSO_ENABLED=true`)
+  `auth_method` form field: `password` (default, used when the flag is off
+  or by tests) or `sso` (hosted-login handoff; the sign-in page uses this
+  exclusively when `RESOURCE_SPACE_SSO_ENABLED=true`)
 - `POST /oauth/sso/callback`: receives the ResourceSpace hosted-login POST
   (`state`, `sessionkey`, `username`, `email`, `fullname`). Email and fullname
   on the callback are ignored (only username and sessionkey are validated);
@@ -258,7 +260,7 @@ Other env vars worth setting (not validated, but recommended):
 | `OAUTH_CLIENTS_JSON` | Optional JSON array for additional broker clients. Each entry needs `clientId`, optional `integration`, and `redirectUriAllowlist`; the redirect allowlist is enforced per client. Leave unset for the current Canva-only deployment. |
 | `OAUTH_REFRESH_GRACE_SECONDS` | How long the just-rotated refresh token remains valid so two near-simultaneous refresh calls don't collide. Default `30`. |
 | `REFRESH_TOKEN_TTL_SECONDS` | Refresh-token lifetime, in seconds. Default `2592000` (30 days). A shorter value is prudent for UAT. |
-| `RESOURCE_SPACE_SSO_ENABLED` | Enables the ResourceSpace hosted-login (SSO) handoff and shows its button on the sign-in page. Default `false`. |
+| `RESOURCE_SPACE_SSO_ENABLED` | Enables the ResourceSpace hosted-login (SSO) handoff. When `true`, the sign-in page shows only a ResourceSpace URL field and **Sign in**. Default `false`. |
 | `RESOURCE_SPACE_SSO_SYSTEM_KEY` | The ResourceSpace `system` destination key used in the outbound handoff URL. Default `canva`. |
 | `RESOURCE_SPACE_SSO_PENDING_TTL_SECONDS` | How long a pending SSO handoff state is valid, in seconds. Default `600`. |
 | `RESOURCE_SPACE_SSO_REPLAY_RETENTION_SECONDS` | How long a used/expired handoff-state tombstone is retained after expiry, so replays and expiries stay distinguishable from unknown states in logs. Default `600`. |

@@ -174,14 +174,22 @@ def test_sso_button_hidden_when_flag_off() -> None:
     for client, _ in _build_client():
         response = client.get("/oauth/authorise")
         assert response.status_code == 200
+        assert 'name="username"' in response.text
+        assert 'name="password"' in response.text
+        assert 'name="auth_method"' not in response.text
         assert "single sign-on" not in response.text.lower()
 
 
-def test_sso_button_present_when_flag_on() -> None:
+def test_hosted_login_is_the_only_sign_in_when_flag_on() -> None:
     for client, _ in _build_client(RESOURCE_SPACE_SSO_ENABLED="true"):
         response = client.get("/oauth/authorise")
         assert response.status_code == 200
-        assert "single sign-on" in response.text.lower()
+        assert "Sign in" in response.text
+        assert 'name="auth_method"' in response.text
+        assert 'value="sso"' in response.text
+        assert 'name="username"' not in response.text
+        assert 'name="password"' not in response.text
+        assert "single sign-on" not in response.text.lower()
 
 
 # --- 2. Callback gating when the flag is off --------------------------------

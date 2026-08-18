@@ -117,13 +117,6 @@
         outline: none;
         box-shadow: 0 0 0 3px rgba(10, 145, 201, 0.45);
       }
-      button.sso-button {
-        margin-top: 12px;
-        background: #ffffff;
-        color: var(--rs-deep-navy);
-        border: 1px solid var(--rs-border);
-      }
-      button.sso-button:hover { background: var(--rs-soft-bg); }
       .error {
         margin: 16px 0 0;
         padding: 12px 14px;
@@ -195,6 +188,14 @@
           spellcheck="false"
           autocapitalize="off"
         />
+        {% if sso_enabled %}
+        <button type="submit" name="auth_method" value="sso">Sign in</button>
+        <p class="meta">
+          You will be sent to your ResourceSpace tenant to sign in. Use
+          whichever method that site already offers (password, SAML, MFA,
+          or an existing session).
+        </p>
+        {% else %}
         <label for="username">Username</label>
         <input
           id="username"
@@ -215,27 +216,19 @@
           autocomplete="current-password"
         />
         <button type="submit">Sign in</button>
-        {% if sso_enabled %}
-        <button
-          type="submit"
-          name="auth_method"
-          value="sso"
-          formnovalidate
-          class="sso-button"
-        >
-          Sign in with single sign-on
-        </button>
-        <p class="meta">
-          Single sign-on sends you to your ResourceSpace tenant to sign in
-          (SAML, MFA or an existing session). Enter your ResourceSpace URL
-          above first.
-        </p>
         {% endif %}
       </form>
+      {% if sso_enabled %}
+      <p class="privacy">
+        Sign-in happens on your ResourceSpace tenant. Canva never sees
+        your credentials.
+      </p>
+      {% else %}
       <p class="privacy">
         Your credentials are sent only to the ResourceSpace tenant at the
         URL above to create a sign-in session. Canva never sees them.
       </p>
+      {% endif %}
       <div class="footer">
         <span>Powered by ResourceSpace</span>
         <a href="https://www.resourcespace.com/" target="_blank" rel="noopener">resourcespace.com</a>
@@ -258,15 +251,12 @@
           /* ignore */
         }
         var urlField = document.getElementById("tenant_url");
+        var userField = document.getElementById("username");
+        var pwField = document.getElementById("password");
         if (urlField && !urlField.value) urlField.focus();
-        else {
-          var userField = document.getElementById("username");
-          if (userField && !userField.value) userField.focus();
-          else {
-            var pwField = document.getElementById("password");
-            if (pwField) pwField.focus();
-          }
-        }
+        else if (userField && !userField.value) userField.focus();
+        else if (pwField) pwField.focus();
+        else if (urlField) urlField.focus();
       })();
     </script>
   </body>

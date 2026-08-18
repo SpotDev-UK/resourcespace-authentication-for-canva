@@ -24,12 +24,12 @@ regardless of which ResourceSpace tenant or Canva app is in use.
 | Scenario | Expected result | Status | Notes |
 |---|---|---|---|
 | Valid tenant connect | OAuth popup accepts the tenant URL and returns to Canva with a working session | | |
-| Password login still works | Signing in with a ResourceSpace username and password succeeds as before, whether or not `RESOURCE_SPACE_SSO_ENABLED` is set | | |
+| Password login fallback | With `RESOURCE_SPACE_SSO_ENABLED` unset or `false`, signing in with a ResourceSpace username and password in the popup still succeeds. The password POST path also still works when the flag is on (tests/rollback) | | |
 | SSO disabled by default | With `RESOURCE_SPACE_SSO_ENABLED` unset or `false`, the sign-in page shows only the password form and `POST /oauth/sso/callback` returns `404` | | |
-| SSO option shown when enabled | With `RESOURCE_SPACE_SSO_ENABLED=true`, the sign-in page also shows a "Sign in with single sign-on" button | | |
+| Hosted-login is the only popup option when enabled | With `RESOURCE_SPACE_SSO_ENABLED=true`, the sign-in page shows only the ResourceSpace URL and a **Sign in** button (no username/password, no "SSO" label) | | |
 | SSO client IP resolution (initiation) | Two browser SSO initiations from distinct end-user networks produce different `resolvedClientHostHash` values in `oauth_sso_initiated`; `clientIpHeaderTrusted` and `clientIpHeaderPresent` are `true` | | Required before enabling SSO on Railway; see Deployment runbook |
 | SSO callback source (server-side) | `oauth_sso_callback_received` shows `clientIpHeaderTrusted: true` and a stable `resolvedClientHostHash` for callbacks from the same ResourceSpace tenant (server-side; not per end-user network) | | |
-| Valid SSO handoff (live browser) | With Dan's ResourceSpace SSO redirect patch applied: choose SSO, complete tenant sign-in, popup follows ResourceSpace **303** to Canva `redirect_uri` with unchanged `state`, code exchange succeeds, working session | **Ready for UAT / Pending** | Run before `RESOURCE_SPACE_SSO_ENABLED=true`. Re-verify after ResourceSpace upgrades. Broker callback/token mint can be tested in isolation via fixture mode. |
+| Valid SSO handoff (live browser) | With Dan's ResourceSpace SSO redirect patch applied: enter the tenant URL, click **Sign in**, complete tenant sign-in, popup follows ResourceSpace **303** to Canva `redirect_uri` with unchanged `state`, code exchange succeeds, working session | **Ready for UAT / Pending** | Run before `RESOURCE_SPACE_SSO_ENABLED=true`. Re-verify after ResourceSpace upgrades. Broker callback/token mint can be tested in isolation via fixture mode. |
 | SSO email claim | `/oauth/userinfo` and `/api/session` omit `email` (callback-supplied email is not trusted; no upstream profile fetch yet) | | |
 | Store file secret hygiene | `grep` of `STORAGE_PATH` shows `enc:v1:` for sealed fields and no cleartext session keys or email addresses | | |
 | Broker log secret hygiene | Broker structured logs during the UAT run contain no session keys, passwords, or email addresses | | |
