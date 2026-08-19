@@ -151,7 +151,8 @@ def _list_fixture_assets(
     )
     visible = [asset for asset in results if asset["mimeType"] in SUPPORTED_IMAGE_MIME_TYPES]
     slice_ = visible[offset : offset + limit]
-    return {"items": [_build_fixture_asset(asset) for asset in slice_], "total": len(visible)}
+    items = [_build_fixture_asset(asset) for asset in slice_]
+    return {"items": items, "total": len(visible), "scanned": len(items)}
 
 
 def _get_fixture_download_source(session: dict[str, Any], asset_id: str) -> dict[str, Any]:

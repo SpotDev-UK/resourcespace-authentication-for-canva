@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 from urllib.parse import urlencode
 
@@ -23,6 +24,30 @@ from ._helpers import (
     _to_iso_date,
     pin_request,
 )
+
+_LIVE_API_READ_TIMEOUT_SECONDS = 30.0
+_LIVE_API_CONNECT_TIMEOUT_SECONDS = 5.0
+# Canva's content finder gives up around 20s. Two-phase listing must share one
+# budget instead of stacking two full 30s client timeouts.
+_LIVE_FIND_BUDGET_SECONDS = 18.0
+_LIVE_FIND_MIN_CALL_SECONDS = 0.1
+_LIVE_FIND_MAX_LIMIT = 100
+
+
+def _httpx_timeout(read_seconds: float) -> httpx.Timeout:
+    connect = min(_LIVE_API_CONNECT_TIMEOUT_SECONDS, max(read_seconds, 0.001))
+    return httpx.Timeout(read_seconds, connect=connect)
+
+
+def _remaining_find_budget(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining < _LIVE_FIND_MIN_CALL_SECONDS:
+        raise ResourceSpaceError(
+            "UPSTREAM_UNAVAILABLE",
+            "ResourceSpace could not be reached.",
+            502,
+        )
+    return remaining
 
 
 def _first_reachable(pinned_urls: list[str], attempt: Any) -> Any:
@@ -59,15 +84,18 @@ def _parse_jsonish_response(response: httpx.Response) -> Any:
         return text
 
 
-def _fetch_jsonish_sync(url: str, *, integration: str | None = None) -> Any:
+def _fetch_jsonish_sync(
+    url: str, *, integration: str | None = None, timeout: float | None = None
+) -> Any:
     # Pin the connection to a validated public IP (closes the DNS-rebinding
     # TOCTOU) while preserving the host for TLS SNI/cert and the Host header.
     # trust_env=False: an env HTTPS_PROXY would tunnel via CONNECT and verify TLS
     # against the pinned IP rather than the sni_hostname, breaking the pin.
     pinned_urls, host_headers, extensions = pin_request(url)
+    read_timeout = _LIVE_API_READ_TIMEOUT_SECONDS if timeout is None else timeout
     try:
         with httpx.Client(
-            timeout=httpx.Timeout(30.0, connect=5.0),
+            timeout=_httpx_timeout(read_timeout),
             trust_env=False,
             headers=_resourcespace_request_headers(integration),
         ) as client:
@@ -90,7 +118,7 @@ def _post_jsonish_sync(
     pinned_urls, host_headers, extensions = pin_request(url)
     try:
         with httpx.Client(
-            timeout=httpx.Timeout(30.0, connect=5.0),
+            timeout=_httpx_timeout(_LIVE_API_READ_TIMEOUT_SECONDS),
             trust_env=False,
             headers=_resourcespace_request_headers(integration),
         ) as client:
@@ -253,6 +281,10 @@ def build_live_search_string(query: str, container_id: str | None) -> str:
         return f"!collection{collection_ref} {search}"
     if collection_ref:
         return f"!collection{collection_ref}"
+    # ResourceSpace exact-ref match only fires when the whole search is the
+    # integer or !resourceN. Prefixing !properties would hide that hit.
+    if search.isdigit():
+        return f"!resource{search}"
     if search:
         return f"{_LIVE_UNSUPPORTED_EXTENSION_FILTER} {search}"
     return _LIVE_UNSUPPORTED_EXTENSION_FILTER
@@ -275,7 +307,7 @@ def _live_search_records(response: Any) -> tuple[int, list[dict[str, Any]]]:
 
 
 def _supported_live_record(record: dict[str, Any]) -> bool:
-    extension = str(record.get("file_extension") or record.get("preview_extension") or "").lower()
+    extension = str(record.get("file_extension") or record.get("preview_extension") or "jpg").lower()
     return _mime_type_from_extension(extension) in SUPPORTED_IMAGE_MIME_TYPES
 
 
@@ -323,22 +355,23 @@ def build_live_asset(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_live_asset_page(response: Any) -> dict[str, Any]:
-    if isinstance(response, dict):
-        total = int(response.get("total", 0) or 0)
-        items = response.get("data") if isinstance(response.get("data"), list) else []
-    elif isinstance(response, list):
-        total = len(response)
-        items = response
-    else:
-        total = 0
-        items = []
-
+    total, items = _live_search_records(response)
     mapped = [
         asset
         for asset in (build_live_asset(item) for item in items)
         if asset["mimeType"] in SUPPORTED_IMAGE_MIME_TYPES and asset["thumbnailSource"] is not None
     ]
     return {"items": mapped, "total": total}
+
+
+def _require_live_search_payload(response: Any) -> None:
+    if isinstance(response, (dict, list)):
+        return
+    raise ResourceSpaceError(
+        "UPSTREAM_REQUEST_FAILED",
+        "ResourceSpace preview listing did not return search results.",
+        502,
+    )
 
 
 def _call_live_api(
@@ -348,6 +381,7 @@ def _call_live_api(
     session_key: str,
     params: dict[str, Any],
     integration: str | None = None,
+    timeout: float | None = None,
 ) -> Any:
     url = _build_signed_api_url(
         api_url=tenant["apiUrl"],
@@ -355,7 +389,7 @@ def _call_live_api(
         session_key=session_key,
         params=params,
     )
-    return _fetch_jsonish_sync(url, integration=integration)
+    return _fetch_jsonish_sync(url, integration=integration, timeout=timeout)
 
 
 def _list_live_containers(session: dict[str, Any], parent_id: str | None) -> list[dict[str, Any]]:
@@ -405,17 +439,21 @@ def _list_live_assets(
     order_by = "title" if sort == "name_asc" else "date"
     sort_direction = "asc" if sort == "updated_asc" else "desc"
     search = build_live_search_string(query, container_id)
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), _LIVE_FIND_MAX_LIMIT))
     common = {
         "order_by": order_by,
         "sort": sort_direction,
         "archive": 0,
         "previewext": "jpg",
     }
+    deadline = monotonic() + _LIVE_FIND_BUDGET_SECONDS
     listing = _call_live_api(
         tenant=session["tenant"],
         username=session["user"]["username"],
         session_key=session["upstream"]["sessionKey"],
         integration=_broker_integration_from_session(session),
+        timeout=_remaining_find_budget(deadline),
         params={
             "function": "search_get_previews",
             "search": search,
@@ -423,6 +461,7 @@ def _list_live_assets(
             **common,
         },
     )
+    _require_live_search_payload(listing)
     total, records = _live_search_records(listing)
     refs = [
         str(record["ref"])
@@ -430,13 +469,14 @@ def _list_live_assets(
         if record.get("ref") is not None and _supported_live_record(record)
     ]
     if not refs:
-        return {"items": [], "total": total}
+        return {"items": [], "total": total, "scanned": len(records)}
 
     previews = _call_live_api(
         tenant=session["tenant"],
         username=session["user"]["username"],
         session_key=session["upstream"]["sessionKey"],
         integration=_broker_integration_from_session(session),
+        timeout=_remaining_find_budget(deadline),
         params={
             "function": "search_get_previews",
             "search": build_live_preview_list_search(refs),
@@ -445,9 +485,14 @@ def _list_live_assets(
             **common,
         },
     )
+    _require_live_search_payload(previews)
     page = normalize_live_asset_page(previews)
     by_id = {asset["id"]: asset for asset in page["items"]}
-    return {"items": [by_id[ref] for ref in refs if ref in by_id], "total": total}
+    return {
+        "items": [by_id[ref] for ref in refs if ref in by_id],
+        "total": total,
+        "scanned": len(records),
+    }
 
 
 def _get_live_download_source(session: dict[str, Any], asset_id: str) -> dict[str, Any]:

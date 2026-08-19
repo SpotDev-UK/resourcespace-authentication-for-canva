@@ -19,7 +19,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from resourcespace_platform.config import create_config
+from resourcespace_platform.http_utils import decode_continuation
 from resourcespace_platform.main import create_app
+from resourcespace_platform.routes.content import _advance_asset_offset
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -294,3 +296,89 @@ def test_canva_uninstall_revokes_session() -> None:
         )
         assert session.status_code == 401
         assert session.json()["error"]["code"] == "SESSION_EXPIRED"
+
+
+def test_advance_asset_offset_uses_scanned_rows() -> None:
+    assert _advance_asset_offset(0, {"items": [], "scanned": 20}, 20) == 20
+    assert _advance_asset_offset(0, {"items": [{"id": "1"}], "scanned": 50}, 100) == 50
+    assert _advance_asset_offset(0, {"items": []}, 20) == 20
+    assert _advance_asset_offset(10, {"items": [{"id": "1"}, {"id": "2"}]}, 40) == 12
+
+
+def test_find_does_not_loop_when_filtered_page_consumes_all_rows(
+    harness: tuple[TestClient, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = harness
+    tokens = _authorize_as(
+        client,
+        tenant_url="https://acme.demo.resourcespace.local",
+        username="alice",
+        password="alice-password",
+    )
+    monkeypatch.setattr(
+        client.app.state.deps.resourcespace_service,
+        "list_assets",
+        lambda *args, **kwargs: {"items": [], "total": 20, "scanned": 20},
+    )
+    payload = _find_resources(
+        client,
+        tokens["access_token"],
+        {"limit": 50, "locale": "en-GB", "types": ["IMAGE"]},
+    )
+    assert payload["type"] == "SUCCESS"
+    assert payload["resources"] == []
+    assert "continuation" not in payload
+
+
+def test_find_continues_from_scanned_offset_not_kept_items(
+    harness: tuple[TestClient, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = harness
+    tokens = _authorize_as(
+        client,
+        tenant_url="https://acme.demo.resourcespace.local",
+        username="alice",
+        password="alice-password",
+    )
+    monkeypatch.setattr(
+        client.app.state.deps.resourcespace_service,
+        "list_assets",
+        lambda *args, **kwargs: {
+            "items": [
+                {
+                    "id": "101",
+                    "name": "Keep Me",
+                    "mimeType": "image/jpeg",
+                    "filename": "keep.jpg",
+                    "thumbnailSource": {
+                        "kind": "proxy",
+                        "url": "https://assets.example.com/101-thm.jpg",
+                        "mimeType": "image/jpeg",
+                        "width": 100,
+                        "height": 80,
+                    },
+                    "previewSource": {
+                        "kind": "proxy",
+                        "url": "https://assets.example.com/101-pre.jpg",
+                        "mimeType": "image/jpeg",
+                        "width": 100,
+                        "height": 80,
+                    },
+                }
+            ],
+            "total": 100,
+            "scanned": 50,
+        },
+    )
+    payload = _find_resources(
+        client,
+        tokens["access_token"],
+        {"limit": 50, "locale": "en-GB", "types": ["IMAGE"]},
+    )
+    assert payload["type"] == "SUCCESS"
+    assert [resource["id"] for resource in payload["resources"]] == ["101"]
+    continuation = decode_continuation(payload["continuation"])
+    assert continuation is not None
+    assert continuation["assetOffset"] == 50
