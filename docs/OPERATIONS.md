@@ -153,14 +153,15 @@ When enabled, the sign-in page collects only the ResourceSpace URL. **Sign
 in** hands the browser off to the tenant's own login page, so the tenant's
 SAML, MFA, native password, or an existing browser session completes
 sign-in. Username and password are not collected in the Canva popup. Off
-by default.
+by default. The popup change is UI-only: `POST /oauth/authorise` still
+accepts `auth_method=password` when the flag is on, for tests and rollback.
 
 - `RESOURCE_SPACE_SSO_ENABLED=false` (default): the sign-in page shows the
   password form and `POST /oauth/sso/callback` returns `404`. Set to
   `true` to show the hosted-login **Sign in** page (ResourceSpace URL only)
   and enable the callback.
 - `POST /oauth/authorise` accepts an `auth_method` form field: `password`
-  (default) or `sso`.
+  (default, still honoured when SSO is on) or `sso`.
 - On `auth_method=sso`, the broker redirects to
   `<tenant-base-url>/pages/user/user_api_session.php?system=<RESOURCE_SPACE_SSO_SYSTEM_KEY>&state=<handoff-state>`.
   `RESOURCE_SPACE_SSO_SYSTEM_KEY` (default `canva`) must match the
@@ -491,6 +492,9 @@ self-heal as tokens rotate.
 ## Failure Modes
 
 - `INVALID_TENANT_URL`: malformed tenant URL entered in the OAuth popup
+- `FORBIDDEN`: tenant URL resolved to a private or non-public address, or
+  could not be resolved at all (a mistyped custom domain included). The
+  sign-in page shows the specific reason.
 - `UNKNOWN_TENANT`: tenant URL was rejected by an optional
   `RESOURCE_SPACE_ALLOWED_HOSTS` suffix list (or, in fixture mode, is not a
   seeded demo tenant)

@@ -778,6 +778,37 @@ def test_production_fixture_sso_rejects_private_ip_without_allowlist() -> None:
         )
         assert response.status_code == 403, response.text
         assert "FORBIDDEN" in response.text
+        assert "private network" in response.text
+
+
+def test_production_fixture_sso_unresolved_host_shows_actionable_message() -> None:
+    overrides = _production_env(
+        RESOURCE_SPACE_MODE="fixture",
+        RESOURCE_SPACE_SSO_ENABLED="true",
+        RESOURCE_SPACE_TENANTS_JSON="[]",
+        RESOURCE_SPACE_ALLOWED_HOSTS="",
+    )
+    for client, _ in _build_client(**overrides):
+        _, challenge = _pkce_pair()
+        response = client.post(
+            "/oauth/authorise",
+            data={
+                "auth_method": "sso",
+                "client_id": "real-canva-client",
+                "redirect_uri": "https://example.canva-apps.com/oauth/callback",
+                "response_type": "code",
+                "state": "canva-state",
+                "scope": "openid dam:read",
+                "code_challenge_method": "S256",
+                "code_challenge": challenge,
+                "tenant_url": "https://no-such-tenant.invalid",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 403, response.text
+        assert "FORBIDDEN" in response.text
+        assert "could not be resolved" in response.text
+        assert "private network" not in response.text
 
 
 def test_production_sso_binds_approved_resourcespace_tenant_to_pending_state(
