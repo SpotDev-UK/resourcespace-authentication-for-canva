@@ -40,7 +40,7 @@ regardless of which ResourceSpace tenant or Canva app is in use.
 | ResourceSpace login user-agent marker | ResourceSpace logs show `RSCanva` in the user-agent for the login/session-key request | | |
 | Invalid credentials | Invalid ResourceSpace credentials still fail with the existing invalid-credentials behaviour and no password in logs/errors | | |
 | Non-Canva marker exclusion | ResourceSpace-bound test traffic without trusted Canva broker metadata does not receive the `RSCanva` marker | | |
-| Invalid host rejection | A tenant URL that matches neither an exact `RESOURCE_SPACE_TENANTS_JSON` record nor an approved `RESOURCE_SPACE_ALLOWED_HOSTS` suffix is rejected before OAuth completion | | |
+| Invalid host rejection | A tenant URL that is not HTTPS, includes credentials, or resolves to a private/non-public address is rejected before OAuth completion. Custom HTTPS ports (for example `:8443`) succeed. With `RESOURCE_SPACE_ALLOWED_HOSTS` empty, custom domains and self-hosted public hosts succeed. | | |
 | Root browse | Homepage shows the agreed top-level collections/folders and image results | | |
 | Browse/search user-agent marker | ResourceSpace logs show `RSCanva` in the user-agent for collection and asset API calls triggered by browsing/searching | | |
 | Nested folder browse | Tester can open a child folder/container and continue browsing | | |

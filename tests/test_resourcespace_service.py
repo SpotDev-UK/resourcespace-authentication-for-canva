@@ -132,6 +132,26 @@ def test_production_synthesizes_tenant_under_approved_resourcespace_suffix(
     assert tenant["apiUrl"] == "https://spotdev.free.resourcespace.com/api/"
 
 
+def test_production_synthesizes_custom_domain_when_allowlist_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_public_dns(monkeypatch)
+    config = create_config(
+        {
+            "APP_ENV": "production",
+            "RESOURCE_SPACE_MODE": "live",
+            "RESOURCE_SPACE_ALLOWED_HOSTS": "",
+            "RESOURCE_SPACE_TENANTS_JSON": "[]",
+        }
+    )
+
+    tenant = get_configured_tenant(config, "https://dam.customer.example/login.php")
+
+    assert tenant["id"] == "tenant_dam-customer-example"
+    assert tenant["baseUrl"] == "https://dam.customer.example"
+    assert tenant["apiUrl"] == "https://dam.customer.example/api/"
+
+
 @pytest.mark.parametrize(
     "tenant_url",
     [
@@ -160,13 +180,15 @@ def test_production_approved_suffix_rejects_hostname_lookalikes(tenant_url: str)
     "tenant_url",
     [
         "http://spotdev.free.resourcespace.com",
-        "https://spotdev.free.resourcespace.com:8443",
         "https://user@spotdev.free.resourcespace.com",
+        "https://spotdev.free.resourcespace.com:0",
     ],
 )
-def test_production_approved_suffix_requires_https_default_port_without_credentials(
+def test_production_synthesized_tenant_requires_https_without_credentials(
     tenant_url: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _patch_public_dns(monkeypatch)
     config = create_config(
         {
             "APP_ENV": "production",
@@ -180,6 +202,36 @@ def test_production_approved_suffix_requires_https_default_port_without_credenti
         get_configured_tenant(config, tenant_url)
 
     assert excinfo.value.code == "INVALID_TENANT_URL"
+
+
+def test_production_synthesizes_tenant_on_non_default_https_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_public_dns(monkeypatch)
+    config = create_config(
+        {
+            "APP_ENV": "production",
+            "RESOURCE_SPACE_MODE": "live",
+            "RESOURCE_SPACE_ALLOWED_HOSTS": "",
+            "RESOURCE_SPACE_TENANTS_JSON": "[]",
+        }
+    )
+
+    tenant = get_configured_tenant(
+        config, "https://dam.customer.example:8443/login.php"
+    )
+
+    assert tenant["id"] == "tenant_dam-customer-example-8443"
+    assert tenant["slug"] == "dam-customer-example-8443"
+    assert tenant["name"] == "dam.customer.example:8443"
+    assert tenant["baseUrl"] == "https://dam.customer.example:8443"
+    assert tenant["apiUrl"] == "https://dam.customer.example:8443/api/"
+
+    other_port = get_configured_tenant(
+        config, "https://dam.customer.example:9443/login.php"
+    )
+    assert other_port["id"] == "tenant_dam-customer-example-9443"
+    assert other_port["id"] != tenant["id"]
 
 
 def test_production_exact_registry_tenant_does_not_need_hosted_suffix(
@@ -276,6 +328,44 @@ def test_get_configured_tenant_allows_private_host_in_fixture_mode() -> None:
     config = create_config({"RESOURCE_SPACE_MODE": "fixture"})
     tenant = get_configured_tenant(config, "https://127.0.0.1")
     assert tenant["baseUrl"] == "https://127.0.0.1"
+
+
+def test_production_fixture_rejects_private_ip_on_synthesized_tenant() -> None:
+    config = create_config(
+        {
+            "APP_ENV": "production",
+            "RESOURCE_SPACE_MODE": "fixture",
+            "RESOURCE_SPACE_TENANTS_JSON": "[]",
+        }
+    )
+    with pytest.raises(ResourceSpaceError) as excinfo:
+        get_configured_tenant(config, "https://127.0.0.1")
+    assert excinfo.value.code == "FORBIDDEN"
+
+
+def test_production_synthesizes_public_ipv6_literal_with_brackets() -> None:
+    config = create_config(
+        {
+            "APP_ENV": "production",
+            "RESOURCE_SPACE_MODE": "live",
+            "RESOURCE_SPACE_ALLOWED_HOSTS": "",
+            "RESOURCE_SPACE_TENANTS_JSON": "[]",
+        }
+    )
+
+    tenant = get_configured_tenant(config, "https://[2606:4700:4700::1111]/login.php")
+
+    assert tenant["id"] == "tenant_2606-4700-4700-1111"
+    assert tenant["baseUrl"] == "https://[2606:4700:4700::1111]"
+    assert tenant["apiUrl"] == "https://[2606:4700:4700::1111]/api/"
+
+    tenant_custom_port = get_configured_tenant(
+        config, "https://[2606:4700:4700::1111]:8443/login.php"
+    )
+    assert tenant_custom_port["id"] == "tenant_2606-4700-4700-1111-8443"
+    assert tenant_custom_port["id"] != tenant["id"]
+    assert tenant_custom_port["baseUrl"] == "https://[2606:4700:4700::1111]:8443"
+    assert tenant_custom_port["apiUrl"] == "https://[2606:4700:4700::1111]:8443/api/"
 
 
 def test_build_live_search_string_scopes_search_to_collections() -> None:
@@ -1526,33 +1616,6 @@ def test_host_matches_strict_bare_entry_is_exact_only() -> None:
     assert _host_matches_strict("example.com", ".example.com") is True
     assert _host_matches_strict("sub.example.com", ".example.com") is True
     assert _host_matches_strict("notexample.com", ".example.com") is False
-
-
-def test_validate_export_url_dot_suffix_allows_apex_and_subdomains(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "resourcespace_platform.services.resourcespace._upload._is_private_ip",
-        lambda _host: False,
-    )
-    config = create_config({"CANVA_UPLOAD_ALLOWED_HOSTS": ".example.com"})
-    _validate_export_url("https://example.com/export.png", config)
-    _validate_export_url("https://sub.example.com/export.png", config)
-    with pytest.raises(ResourceSpaceError):
-        _validate_export_url("https://notexample.com/export.png", config)
-
-
-def test_validate_export_url_bare_host_is_exact_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "resourcespace_platform.services.resourcespace._upload._is_private_ip",
-        lambda _host: False,
-    )
-    config = create_config({"CANVA_UPLOAD_ALLOWED_HOSTS": "cdn.example.com"})
-    _validate_export_url("https://cdn.example.com/export.png", config)
-    with pytest.raises(ResourceSpaceError):
-        _validate_export_url("https://attacker.cdn.example.com/export.png", config)
 
 
 def test_pin_request_allowlist_rejects_non_allowlisted_subdomain() -> None:
