@@ -194,7 +194,11 @@ def resolve_pinned_addresses(host: str) -> list[str]:
     except (socket.gaierror, UnicodeError) as exc:
         # gaierror: does not resolve. UnicodeError: invalid DNS label (e.g. a
         # label longer than 63 bytes). Both are a controlled rejection, not 500.
-        raise ResourceSpaceError("FORBIDDEN", "Host does not resolve.", 403) from exc
+        raise ResourceSpaceError(
+            "FORBIDDEN",
+            "This ResourceSpace URL could not be resolved.",
+            403,
+        ) from exc
     v4: list[str] = []
     v6: list[str] = []
     for info in infos:

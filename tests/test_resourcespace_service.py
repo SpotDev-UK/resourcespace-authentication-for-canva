@@ -17,6 +17,7 @@ from resourcespace_platform.services.asset_service import AssetService
 from resourcespace_platform.services.resourcespace import (
     ResourceSpaceError,
     build_live_asset,
+    build_live_preview_list_search,
     build_live_search_string,
     create_resourcespace_service,
     get_configured_tenant,
@@ -36,8 +37,11 @@ from resourcespace_platform.services.resourcespace._helpers import (
 from resourcespace_platform.services.resourcespace._upload import _validate_export_url
 from resourcespace_platform.services.resourcespace.service import _tenant_identity
 from resourcespace_platform.services.resourcespace._live_backend import (
+    _LIVE_FIND_BUDGET_SECONDS,
+    _LIVE_FIND_MAX_LIMIT,
     _authenticate_live_tenant,
     _fetch_jsonish_sync,
+    _list_live_assets,
 )
 from resourcespace_platform.services.resourcespace._upload import _post_multipart_live_api
 
@@ -369,10 +373,390 @@ def test_production_synthesizes_public_ipv6_literal_with_brackets() -> None:
 
 
 def test_build_live_search_string_scopes_search_to_collections() -> None:
-    assert build_live_search_string("", None) == ""
-    assert build_live_search_string("hero", None) == "hero"
+    assert build_live_search_string("", None) == "!propertiesfext:-tif;fext:-tiff"
+    assert build_live_search_string("hero", None) == "!propertiesfext:-tif;fext:-tiff hero"
+    assert build_live_search_string("1234", None) == "!resource1234"
     assert build_live_search_string("", "collection:42") == "!collection42"
     assert build_live_search_string("hero banner", "collection:42") == "!collection42 hero banner"
+    assert build_live_search_string("1234", "collection:42") == "!collection42 1234"
+    assert build_live_preview_list_search(["101", "102"]) == "!list101:102"
+
+
+def _live_asset_session() -> dict[str, Any]:
+    return {
+        "tenant": {
+            "id": "tenant_example",
+            "apiUrl": "https://dam.example.com/api/",
+            "baseUrl": "https://dam.example.com",
+        },
+        "user": {"username": "SpotDev"},
+        "upstream": {"mode": "live", "sessionKey": "rs-session-key"},
+        "broker": {"integration": "canva"},
+    }
+
+
+def test_list_live_assets_resolves_previews_only_for_supported_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        params = kwargs["params"]
+        calls.append(params)
+        if "getsizes" not in params:
+            return {
+                "total": 3,
+                "data": [
+                    {
+                        "ref": 101,
+                        "title": "Keep Me",
+                        "file_extension": "png",
+                        "preview_extension": "jpg",
+                    },
+                    {
+                        "ref": 102,
+                        "title": "Unsupported TIFF",
+                        "file_extension": "tiff",
+                        "preview_extension": "jpg",
+                    },
+                    {
+                        "ref": 103,
+                        "title": "Also Keep",
+                        "file_extension": "jpg",
+                        "preview_extension": "jpg",
+                    },
+                ],
+            }
+        return {
+            "total": 2,
+            "data": [
+                {
+                    "ref": 103,
+                    "title": "Also Keep",
+                    "file_extension": "jpg",
+                    "preview_extension": "jpg",
+                    "url_thm": "https://assets.example.com/103-thm.jpg",
+                },
+                {
+                    "ref": 101,
+                    "title": "Keep Me",
+                    "file_extension": "png",
+                    "preview_extension": "jpg",
+                    "url_thm": "https://assets.example.com/101-thm.jpg",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    page = _list_live_assets(
+        _live_asset_session(),
+        query="",
+        container_id=None,
+        offset=0,
+        limit=50,
+        sort="updated_desc",
+    )
+
+    assert [asset["id"] for asset in page["items"]] == ["101", "103"]
+    assert page["total"] == 3
+    assert page["scanned"] == 3
+    assert len(calls) == 2
+    assert "getsizes" not in calls[0]
+    assert calls[0]["search"] == "!propertiesfext:-tif;fext:-tiff"
+    assert calls[0]["fetchrows"] == "0,50"
+    assert calls[1]["search"] == "!list101:103"
+    assert calls[1]["fetchrows"] == "0,2"
+    assert calls[1]["getsizes"] == "thm,pre"
+    assert "102" not in calls[1]["search"]
+
+
+def test_list_live_assets_skips_preview_fetch_when_page_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        calls.append(kwargs["params"])
+        return {
+            "total": 1,
+            "data": [
+                {
+                    "ref": 102,
+                    "title": "Unsupported TIFF",
+                    "file_extension": "tiff",
+                    "preview_extension": "jpg",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    page = _list_live_assets(
+        _live_asset_session(),
+        query="hero",
+        container_id="collection:42",
+        offset=0,
+        limit=50,
+        sort="updated_desc",
+    )
+
+    assert page == {"items": [], "total": 1, "scanned": 1}
+    assert len(calls) == 1
+    assert calls[0]["search"] == "!collection42 hero"
+    assert "getsizes" not in calls[0]
+
+
+def test_list_live_assets_uses_resource_special_for_numeric_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        calls.append(kwargs["params"])
+        return {"total": 0, "data": []}
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    _list_live_assets(
+        _live_asset_session(),
+        query="1234",
+        container_id=None,
+        offset=0,
+        limit=50,
+        sort="updated_desc",
+    )
+
+    assert calls[0]["search"] == "!resource1234"
+
+
+def test_list_live_assets_shares_find_budget_across_both_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeouts: list[float] = []
+
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        timeouts.append(kwargs["timeout"])
+        if "getsizes" not in kwargs["params"]:
+            return {
+                "total": 1,
+                "data": [
+                    {
+                        "ref": 101,
+                        "title": "Keep Me",
+                        "file_extension": "png",
+                        "preview_extension": "jpg",
+                    }
+                ],
+            }
+        return {
+            "total": 1,
+            "data": [
+                {
+                    "ref": 101,
+                    "title": "Keep Me",
+                    "file_extension": "png",
+                    "preview_extension": "jpg",
+                    "url_thm": "https://assets.example.com/101-thm.jpg",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    _list_live_assets(
+        _live_asset_session(),
+        query="",
+        container_id=None,
+        offset=0,
+        limit=50,
+        sort="updated_desc",
+    )
+
+    assert len(timeouts) == 2
+    assert 0 < timeouts[0] <= _LIVE_FIND_BUDGET_SECONDS
+    assert 0 < timeouts[1] <= timeouts[0]
+
+
+def test_list_live_assets_raises_when_preview_payload_is_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        if "getsizes" not in kwargs["params"]:
+            return {
+                "total": 1,
+                "data": [
+                    {
+                        "ref": 101,
+                        "title": "Keep Me",
+                        "file_extension": "png",
+                        "preview_extension": "jpg",
+                    }
+                ],
+            }
+        return False
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    with pytest.raises(ResourceSpaceError) as excinfo:
+        _list_live_assets(
+            _live_asset_session(),
+            query="",
+            container_id=None,
+            offset=0,
+            limit=50,
+            sort="updated_desc",
+        )
+    assert excinfo.value.code == "UPSTREAM_REQUEST_FAILED"
+
+
+def test_list_live_assets_raises_when_find_budget_is_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    clock = iter((100.0, 100.0, 118.0))
+
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        calls.append(kwargs["params"])
+        return {
+            "total": 1,
+            "data": [
+                {
+                    "ref": 101,
+                    "title": "Keep Me",
+                    "file_extension": "png",
+                    "preview_extension": "jpg",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend.monotonic",
+        lambda: next(clock),
+    )
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    with pytest.raises(ResourceSpaceError) as excinfo:
+        _list_live_assets(
+            _live_asset_session(),
+            query="",
+            container_id=None,
+            offset=0,
+            limit=50,
+            sort="updated_desc",
+        )
+    assert excinfo.value.code == "UPSTREAM_UNAVAILABLE"
+    assert len(calls) == 1
+
+
+def test_list_live_assets_treats_missing_extension_as_jpeg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        calls.append(kwargs["params"])
+        if "getsizes" not in kwargs["params"]:
+            return {
+                "total": 1,
+                "data": [{"ref": 101, "title": "No Extension"}],
+            }
+        return {
+            "total": 1,
+            "data": [
+                {
+                    "ref": 101,
+                    "title": "No Extension",
+                    "preview_extension": "jpg",
+                    "url_thm": "https://assets.example.com/101-thm.jpg",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    page = _list_live_assets(
+        _live_asset_session(),
+        query="",
+        container_id=None,
+        offset=0,
+        limit=50,
+        sort="updated_desc",
+    )
+
+    assert [asset["id"] for asset in page["items"]] == ["101"]
+    assert calls[1]["search"] == "!list101"
+
+
+def test_list_live_assets_raises_when_listing_payload_is_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        return False
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    with pytest.raises(ResourceSpaceError) as excinfo:
+        _list_live_assets(
+            _live_asset_session(),
+            query="",
+            container_id=None,
+            offset=0,
+            limit=50,
+            sort="updated_desc",
+        )
+    assert excinfo.value.code == "UPSTREAM_REQUEST_FAILED"
+
+
+def test_list_live_assets_clamps_oversized_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_call_live_api(**kwargs: Any) -> Any:
+        calls.append(kwargs["params"])
+        return {"total": 0, "data": []}
+
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._live_backend._call_live_api",
+        fake_call_live_api,
+    )
+
+    page = _list_live_assets(
+        _live_asset_session(),
+        query="",
+        container_id=None,
+        offset=0,
+        limit=5000,
+        sort="updated_desc",
+    )
+
+    assert page == {"items": [], "total": 0, "scanned": 0}
+    assert calls[0]["fetchrows"] == f"0,{_LIVE_FIND_MAX_LIMIT}"
 
 
 def test_build_live_asset_maps_previews_and_metadata() -> None:

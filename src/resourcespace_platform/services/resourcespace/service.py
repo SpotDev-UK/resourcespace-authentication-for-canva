@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ...config import DEV_LIKE_ENVIRONMENTS, AppConfig
+from . import _helpers as _rs_helpers
 from ._fixture_backend import (
     _authenticate_fixture_sso,
     _authenticate_fixture_tenant,
@@ -61,13 +62,14 @@ def _reject_private_tenant_sink(
 
     Runs for every non-fixture mode (the runtime dispatch treats anything that
     is not exactly ``"fixture"`` as live, so the guard must match that, not just
-    the literal ``"live"``). ``_is_private_ip`` fails closed on non-resolving
-    hosts, and fixture/dev flows use non-resolving demo hostnames, so gating on
-    fixture avoids wrongly blocking them. Applies even to configured/allowlisted
-    tenants (a mis-set or tampered tenant entry must not become an internal
-    request sink). Pass ``skip_fixture=False`` for dynamically entered tenants
-    outside development/test, where fixture mode must not become an
-    open-redirect to a private or non-resolving URL.
+    the literal ``"live"``). Unresolved hosts are still rejected (FORBIDDEN)
+    with a distinct "could not be resolved" message; private resolutions use
+    the private-network wording. Fixture/dev flows use non-resolving demo
+    hostnames, so gating on fixture avoids wrongly blocking them. Applies even
+    to configured/allowlisted tenants (a mis-set or tampered tenant entry must
+    not become an internal request sink). Pass ``skip_fixture=False`` for
+    dynamically entered tenants outside development/test, where fixture mode
+    must not become an open-redirect to a private or non-resolving URL.
     """
     if skip_fixture and config.resource_space.mode == "fixture":
         return
@@ -75,7 +77,25 @@ def _reject_private_tenant_sink(
         if not url:
             continue
         host = (urlparse(url).hostname or "").lower()
-        if host and _is_private_ip(host):
+        if not host:
+            continue
+        try:
+            ascii_host = canonical_ascii_host(host)
+        except ResourceSpaceError as exc:
+            raise ResourceSpaceError(
+                "FORBIDDEN",
+                "This ResourceSpace URL could not be resolved.",
+                403,
+            ) from exc
+        try:
+            _rs_helpers.socket.getaddrinfo(ascii_host, None)
+        except (_rs_helpers.socket.gaierror, UnicodeError) as exc:
+            raise ResourceSpaceError(
+                "FORBIDDEN",
+                "This ResourceSpace URL could not be resolved.",
+                403,
+            ) from exc
+        if _is_private_ip(host):
             raise ResourceSpaceError(
                 "FORBIDDEN",
                 "This ResourceSpace URL resolves to a private network address.",

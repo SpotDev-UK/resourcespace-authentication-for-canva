@@ -42,6 +42,7 @@ regardless of which ResourceSpace tenant or Canva app is in use.
 | Non-Canva marker exclusion | ResourceSpace-bound test traffic without trusted Canva broker metadata does not receive the `RSCanva` marker | | |
 | Invalid host rejection | A tenant URL that is not HTTPS, includes credentials, or resolves to a private/non-public address is rejected before OAuth completion. Custom HTTPS ports (for example `:8443`) succeed. With `RESOURCE_SPACE_ALLOWED_HOSTS` empty, custom domains and self-hosted public hosts succeed. | | |
 | Root browse | Homepage shows the agreed top-level collections/folders and image results | | |
+| TIFF-heavy library browse | A library or collection that contains TIFFs plus supported images loads the supported images in the Canva sidebar without "Assets failed to load". TIFFs stay hidden. Searching by numeric resource id still finds that asset. | | Live tenant; unit tests cannot prove ResourceSpace preview generation stays off the hot path |
 | Browse/search user-agent marker | ResourceSpace logs show `RSCanva` in the user-agent for collection and asset API calls triggered by browsing/searching | | |
 | Nested folder browse | Tester can open a child folder/container and continue browsing | | |
 | In-folder search | Search inside the current folder returns only in-scope assets for that folder | | |

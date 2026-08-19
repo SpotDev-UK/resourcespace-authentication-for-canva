@@ -52,6 +52,14 @@ def _build_image_response(asset: dict[str, Any], preview_grant: dict[str, Any]) 
     }
 
 
+def _advance_asset_offset(current: int, page: dict[str, Any], total: int) -> int:
+    scanned = page.get("scanned")
+    consumed = max(0, int(scanned)) if scanned is not None else len(page.get("items") or [])
+    if consumed <= 0:
+        return max(current, total)
+    return current + consumed
+
+
 def _map_find_error(error: ResourceSpaceError) -> dict[str, str]:
     code = error.code
     if code == "UPSTREAM_SESSION_EXPIRED":
@@ -186,7 +194,7 @@ async def content_resources_find(request: Request) -> Response:
                     filename=asset.get("filename"),
                 )
                 resources.append(_build_image_response(asset, preview_grant))
-            asset_offset += len(assets["items"])
+            asset_offset = _advance_asset_offset(asset_offset, assets, asset_total)
         elif includes_images:
             preview_assets = deps.resourcespace_service.list_assets(
                 session,
