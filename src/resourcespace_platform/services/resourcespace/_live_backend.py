@@ -240,6 +240,12 @@ def _apply_configured_collection_tree(
     return collections
 
 
+# ResourceSpace !properties is a SQL filter and must be the first token, so it
+# cannot be combined with !collection. fext:-tif excludes TIFF originals that
+# otherwise force search_get_previews to generate JPEG previews (often >20s).
+_LIVE_UNSUPPORTED_EXTENSION_FILTER = "!propertiesfext:-tif;fext:-tiff"
+
+
 def build_live_search_string(query: str, container_id: str | None) -> str:
     search = (query or "").strip()
     collection_ref = _decode_collection_container_id(container_id) if container_id else None
@@ -247,7 +253,30 @@ def build_live_search_string(query: str, container_id: str | None) -> str:
         return f"!collection{collection_ref} {search}"
     if collection_ref:
         return f"!collection{collection_ref}"
-    return search
+    if search:
+        return f"{_LIVE_UNSUPPORTED_EXTENSION_FILTER} {search}"
+    return _LIVE_UNSUPPORTED_EXTENSION_FILTER
+
+
+def build_live_preview_list_search(refs: list[str]) -> str:
+    return "!list" + ":".join(refs)
+
+
+def _live_search_records(response: Any) -> tuple[int, list[dict[str, Any]]]:
+    if isinstance(response, dict):
+        total = int(response.get("total", 0) or 0)
+        items = response.get("data") if isinstance(response.get("data"), list) else []
+    elif isinstance(response, list):
+        items = response
+        total = len(items)
+    else:
+        return 0, []
+    return total, [item for item in items if isinstance(item, dict)]
+
+
+def _supported_live_record(record: dict[str, Any]) -> bool:
+    extension = str(record.get("file_extension") or record.get("preview_extension") or "").lower()
+    return _mime_type_from_extension(extension) in SUPPORTED_IMAGE_MIME_TYPES
 
 
 def build_live_asset(record: dict[str, Any]) -> dict[str, Any]:
@@ -370,25 +399,55 @@ def _list_live_assets(
     limit: int,
     sort: str,
 ) -> dict[str, Any]:
+    # List first without preview URLs, then resolve thumbs only for Canva-
+    # supported originals. search_get_previews with getsizes can spend tens of
+    # seconds generating JPEG previews for TIFFs that the sidebar then drops.
     order_by = "title" if sort == "name_asc" else "date"
     sort_direction = "asc" if sort == "updated_asc" else "desc"
-    response = _call_live_api(
+    search = build_live_search_string(query, container_id)
+    common = {
+        "order_by": order_by,
+        "sort": sort_direction,
+        "archive": 0,
+        "previewext": "jpg",
+    }
+    listing = _call_live_api(
         tenant=session["tenant"],
         username=session["user"]["username"],
         session_key=session["upstream"]["sessionKey"],
         integration=_broker_integration_from_session(session),
         params={
             "function": "search_get_previews",
-            "search": build_live_search_string(query, container_id),
-            "order_by": order_by,
-            "sort": sort_direction,
-            "archive": 0,
+            "search": search,
             "fetchrows": f"{offset},{limit}",
-            "getsizes": "thm,pre",
-            "previewext": "jpg",
+            **common,
         },
     )
-    return normalize_live_asset_page(response)
+    total, records = _live_search_records(listing)
+    refs = [
+        str(record["ref"])
+        for record in records
+        if record.get("ref") is not None and _supported_live_record(record)
+    ]
+    if not refs:
+        return {"items": [], "total": total}
+
+    previews = _call_live_api(
+        tenant=session["tenant"],
+        username=session["user"]["username"],
+        session_key=session["upstream"]["sessionKey"],
+        integration=_broker_integration_from_session(session),
+        params={
+            "function": "search_get_previews",
+            "search": build_live_preview_list_search(refs),
+            "fetchrows": f"0,{len(refs)}",
+            "getsizes": "thm,pre",
+            **common,
+        },
+    )
+    page = normalize_live_asset_page(previews)
+    by_id = {asset["id"]: asset for asset in page["items"]}
+    return {"items": [by_id[ref] for ref in refs if ref in by_id], "total": total}
 
 
 def _get_live_download_source(session: dict[str, Any], asset_id: str) -> dict[str, Any]:
