@@ -170,6 +170,9 @@
       {% if error_code %}
       <p class="error" role="alert">
         We couldn&rsquo;t complete sign-in: <strong>{{ error_code }}</strong>
+        {% if error_message %}
+        — {{ error_message }}
+        {% endif %}
       </p>
       {% endif %}
       <form method="post" action="/oauth/authorise" autocomplete="on">

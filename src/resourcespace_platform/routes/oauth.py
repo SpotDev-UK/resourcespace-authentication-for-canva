@@ -121,6 +121,7 @@ def _render_authorize(
     query_params: dict[str, str],
     *,
     error_code: str | None = None,
+    error_message: str | None = None,
     form_values: dict[str, str] | None = None,
     manual_test_mode: bool = False,
 ) -> str:
@@ -142,6 +143,7 @@ def _render_authorize(
     return template.render(
         hidden_fields=hidden_fields,
         error_code=error_code,
+        error_message=error_message,
         tenant_url=values.get("tenant_url", ""),
         username=values.get("username", ""),
         client_id=config.oauth.client_id,
@@ -297,6 +299,7 @@ async def oauth_authorize_post(request: Request) -> Response:
             config,
             dict(request.query_params),
             error_code=mapped.code,
+            error_message=mapped.message,
             form_values=body,
             manual_test_mode=manual_test_mode,
         )
@@ -403,6 +406,7 @@ def _begin_sso_authorize(
             config,
             dict(request.query_params),
             error_code=mapped.code,
+            error_message=mapped.message,
             form_values=body,
         )
         return HTMLResponse(
