@@ -67,15 +67,14 @@ The startup validator refuses to boot the broker outside `development` /
 - `CANVA_CLIENT_SECRET`
 - `CANVA_REQUEST_VERIFICATION_MODE` — must be `required`
 - `RESOURCE_SPACE_MODE`
-- At least one ResourceSpace tenant routing source:
-  `RESOURCE_SPACE_ALLOWED_HOSTS=.resourcespace.com` for canonical hosted
-  hostnames and/or `RESOURCE_SPACE_TENANTS_JSON` for an exact instance whose
-  original ResourceSpace-provided hostname is unavailable or needs an override
 
-Customers should enter their original `<tenant>.resourcespace.com` hostname
-even if they normally use a custom domain. The configured suffix is an approved
-broker routing boundary, not proof of who operates a hostname. Dynamic tenants
-remain restricted to HTTPS on port 443, public DNS and a same-origin API URL.
+Leave `RESOURCE_SPACE_ALLOWED_HOSTS` empty so customers can enter the
+ResourceSpace URL they normally use, including custom domains and
+self-hosted instances. Set it only to lock the broker to known hostname
+suffixes. Use `RESOURCE_SPACE_TENANTS_JSON` only for per-tenant overrides
+such as an explicit `apiUrl`. Dynamically entered tenants remain restricted
+to HTTPS without embedded credentials, public DNS, and a same-origin API URL.
+Non-default HTTPS ports are preserved.
 
 **Tunables (defaults usually fine)**
 

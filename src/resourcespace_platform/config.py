@@ -373,12 +373,6 @@ def validate_config_for_environment(config: AppConfig) -> None:
         problems.append(config.oauth.clients_parse_error)
     if config.resource_space.tenants_parse_error:
         problems.append(config.resource_space.tenants_parse_error)
-    elif not config.resource_space.tenants and not config.resource_space.allowed_hosts:
-        problems.append(
-            "Configure at least one approved ResourceSpace tenant outside development/test: "
-            "set RESOURCE_SPACE_TENANTS_JSON to a non-empty array of exact tenant records "
-            "or RESOURCE_SPACE_ALLOWED_HOSTS to one or more approved hostname suffixes."
-        )
     if config.signing.request_verification_mode != "required":
         problems.append(
             "CANVA_REQUEST_VERIFICATION_MODE must be 'required' outside development "

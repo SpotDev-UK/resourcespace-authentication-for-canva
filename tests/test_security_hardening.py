@@ -205,6 +205,17 @@ def test_validator_passes_with_approved_resourcespace_suffix_and_empty_registry(
     validate_config_for_environment(config)
 
 
+def test_validator_passes_live_mode_with_empty_registry_and_empty_allowlist() -> None:
+    config = create_config(
+        _production_env(
+            RESOURCE_SPACE_MODE="live",
+            RESOURCE_SPACE_TENANTS_JSON="[]",
+            RESOURCE_SPACE_ALLOWED_HOSTS="",
+        )
+    )
+    validate_config_for_environment(config)
+
+
 def test_validator_rejects_unknown_resource_space_mode() -> None:
     config = create_config(_production_env(RESOURCE_SPACE_MODE="banana"))
     with pytest.raises(ConfigValidationError) as info:
@@ -714,10 +725,11 @@ def test_metrics_full_payload_requires_bearer_token() -> None:
 
 
 def test_production_fixture_sso_rejects_unregistered_tenant_url() -> None:
-    """Outside dev/test, SSO must not redirect to a synthesized tenant host."""
+    """An optional host allowlist still blocks SSO redirects to unknown hosts."""
     overrides = _production_env(
         RESOURCE_SPACE_MODE="fixture",
         RESOURCE_SPACE_SSO_ENABLED="true",
+        RESOURCE_SPACE_ALLOWED_HOSTS=".resourcespace.com",
     )
     for client, _ in _build_client(**overrides):
         _, challenge = _pkce_pair()
@@ -740,7 +752,41 @@ def test_production_fixture_sso_rejects_unregistered_tenant_url() -> None:
         assert "UNKNOWN_TENANT" in response.text
 
 
-def test_production_sso_binds_approved_resourcespace_tenant_to_pending_state() -> None:
+def test_production_fixture_sso_rejects_private_ip_without_allowlist() -> None:
+    overrides = _production_env(
+        RESOURCE_SPACE_MODE="fixture",
+        RESOURCE_SPACE_SSO_ENABLED="true",
+        RESOURCE_SPACE_TENANTS_JSON="[]",
+        RESOURCE_SPACE_ALLOWED_HOSTS="",
+    )
+    for client, _ in _build_client(**overrides):
+        _, challenge = _pkce_pair()
+        response = client.post(
+            "/oauth/authorise",
+            data={
+                "auth_method": "sso",
+                "client_id": "real-canva-client",
+                "redirect_uri": "https://example.canva-apps.com/oauth/callback",
+                "response_type": "code",
+                "state": "canva-state",
+                "scope": "openid dam:read",
+                "code_challenge_method": "S256",
+                "code_challenge": challenge,
+                "tenant_url": "https://127.0.0.1",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 403, response.text
+        assert "FORBIDDEN" in response.text
+
+
+def test_production_sso_binds_approved_resourcespace_tenant_to_pending_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._helpers.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
     overrides = _production_env(
         RESOURCE_SPACE_MODE="fixture",
         RESOURCE_SPACE_SSO_ENABLED="true",
@@ -774,6 +820,49 @@ def test_production_sso_binds_approved_resourcespace_tenant_to_pending_state() -
         assert pending["tenant"]["apiUrl"] == "https://spotdev.free.resourcespace.com/api/"
         assert location.startswith(
             "https://spotdev.free.resourcespace.com/pages/user/user_api_session.php?"
+        )
+
+
+def test_production_sso_accepts_custom_domain_when_allowlist_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "resourcespace_platform.services.resourcespace._helpers.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+    overrides = _production_env(
+        RESOURCE_SPACE_MODE="fixture",
+        RESOURCE_SPACE_SSO_ENABLED="true",
+        RESOURCE_SPACE_TENANTS_JSON="[]",
+        RESOURCE_SPACE_ALLOWED_HOSTS="",
+    )
+    for client, storage_path in _build_client(**overrides):
+        _, challenge = _pkce_pair()
+        response = client.post(
+            "/oauth/authorise",
+            data={
+                "auth_method": "sso",
+                "client_id": "real-canva-client",
+                "redirect_uri": "https://example.canva-apps.com/oauth/callback",
+                "response_type": "code",
+                "state": "canva-state",
+                "scope": "openid dam:read",
+                "code_challenge_method": "S256",
+                "code_challenge": challenge,
+                "tenant_url": "https://dam.customer.example/login.php",
+            },
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 302, response.text
+        location = response.headers["location"]
+        handoff_state = parse_qs(urlparse(location).query)["state"][0]
+        store = json.loads(Path(storage_path).read_text())
+        pending = store["pendingSsoStates"][handoff_state]
+        assert pending["tenant"]["baseUrl"] == "https://dam.customer.example"
+        assert pending["tenant"]["apiUrl"] == "https://dam.customer.example/api/"
+        assert location.startswith(
+            "https://dam.customer.example/pages/user/user_api_session.php?"
         )
 
 

@@ -7,7 +7,7 @@ copyright and trade-mark terms.
 Tenant-aware OAuth and content broker that sits between the Canva app and a
 ResourceSpace tenant. Owns:
 
-- hosted-tenant ResourceSpace URL validation in the OAuth popup
+- ResourceSpace URL validation in the OAuth popup
 - ResourceSpace credential exchange and session binding
 - persistent OAuth code/token/grant storage
 - template-facing resource discovery, download, and **upload** for the Canva app
@@ -41,15 +41,19 @@ for which is in the following repo:
 
 Fixture mode rejects upload calls explicitly — uploads are live-only.
 
-Outside `development`/`test`, a tenant must either match an exact entry in
-`RESOURCE_SPACE_TENANTS_JSON` or fall under an approved suffix in
-`RESOURCE_SPACE_ALLOWED_HOSTS`. Suffix-matched tenants are derived at runtime
-and are restricted to HTTPS on port 443 with a same-origin API URL. The hosted
-rollout uses `.resourcespace.com`; customers should enter their original
-ResourceSpace-provided hostname even if they normally use a custom domain. Use
-an exact entry only when that original hostname is unavailable or an instance
-needs a per-tenant override. A configured suffix is a broker routing boundary,
-not proof of who operates a hostname.
+The OAuth popup asks the user for their ResourceSpace URL (the address they
+normally use, including custom domains and self-hosted instances). In live
+mode that URL is accepted when it is HTTPS, has no embedded credentials,
+and resolves only to a public address. Non-default HTTPS ports are kept so
+self-hosted instances (for example ``:8443``) work. Private, loopback,
+link-local, reserved, multicast, CGNAT/shared (`100.64.0.0/10`), IPv6
+site-local, and non-resolving hosts are rejected (SSRF protection).
+
+`RESOURCE_SPACE_ALLOWED_HOSTS` is an optional extra restriction. Leave it
+empty so any public ResourceSpace URL works. If set, unknown hosts that do
+not match a suffix or an exact `RESOURCE_SPACE_TENANTS_JSON` record are
+rejected. Use the JSON registry only for per-tenant overrides such as an
+explicit `apiUrl`.
 
 ### Sign-in methods
 
@@ -241,8 +245,6 @@ precise list of which variables are missing or unsafe.
 | `OAUTH_CLIENT_ID` | The primary OAuth client id Canva uses against this broker. The `canva-dev-app` placeholder is rejected unless you also set `OAUTH_ALLOW_DEFAULT_CLIENT_ID=true` (only safe when the redirect-URI allowlist is tight). |
 | `OAUTH_REDIRECT_URI_ALLOWLIST` | Comma-separated, exact-match list of redirect URIs the primary Canva integration uses. The broker rejects any other `redirect_uri` on `/oauth/authorise`. |
 | `CORS_ORIGIN` | Comma-separated list of origins Canva uses to talk to the broker. Typically the iframe origin (`https://app-<lowercased-app-id>.canva-apps.com`) AND the editor origin (`https://www.canva.com`) — the editor fetches image bytes when a user drags an asset onto the canvas. Wildcard `*` is rejected. |
-| `RESOURCE_SPACE_ALLOWED_HOSTS` | Comma-separated approved hostname suffixes. Use `.resourcespace.com` for the hosted rollout; it accepts nested hosts such as `spotdev.free.resourcespace.com` but rejects lookalikes. Dynamically resolved tenants must use HTTPS on port 443 and public DNS. A suffix is a routing boundary, not proof of who operates the hostname. Outside development/test, at least this allowlist or `RESOURCE_SPACE_TENANTS_JSON` must be configured. |
-| `RESOURCE_SPACE_TENANTS_JSON` | JSON array of exact tenant objects (each with `id` and `baseUrl`). Use when a customer's original ResourceSpace-provided hostname is unavailable or for per-tenant overrides. May be `[]` when `RESOURCE_SPACE_ALLOWED_HOSTS=.resourcespace.com`. |
 | `STORAGE_ENCRYPTION_KEY` | Fernet key encrypting sensitive store fields (ResourceSpace session keys, user email) at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Required outside development/test. |
 
 Other env vars worth setting (not validated, but recommended):
@@ -264,6 +266,8 @@ Other env vars worth setting (not validated, but recommended):
 | `RESOURCE_SPACE_SSO_SYSTEM_KEY` | The ResourceSpace `system` destination key used in the outbound handoff URL. Default `canva`. |
 | `RESOURCE_SPACE_SSO_PENDING_TTL_SECONDS` | How long a pending SSO handoff state is valid, in seconds. Default `600`. |
 | `RESOURCE_SPACE_SSO_REPLAY_RETENTION_SECONDS` | How long a used/expired handoff-state tombstone is retained after expiry, so replays and expiries stay distinguishable from unknown states in logs. Default `600`. |
+| `RESOURCE_SPACE_ALLOWED_HOSTS` | Optional comma-separated hostname suffixes. Empty (recommended for this public bridge) accepts any public HTTPS ResourceSpace URL, including custom domains and self-hosted instances. If set, only matching hosts plus exact `RESOURCE_SPACE_TENANTS_JSON` records are accepted. Dynamically resolved tenants must use HTTPS (any port) and public DNS. |
+| `RESOURCE_SPACE_TENANTS_JSON` | Optional JSON array of exact tenant objects (each with `id` and `baseUrl`). Use only for per-tenant overrides such as an explicit `apiUrl`. |
 | `RESOURCE_SPACE_ASSET_ALLOWED_HOSTS` | Optional, comma-separated egress allowlist for the signed-asset proxy fetch. Empty means any public host is allowed (private IPs are blocked unconditionally). |
 | `RESOURCE_SPACE_ASSET_PROXY_MAX_BYTES` | Hard cap, in bytes, on a proxied asset response. Default `52428800` (50 MiB); the fetch streams and aborts if exceeded. |
 | `METRICS_TOKEN` | When set, `/metrics` returns the extended posture payload only to callers presenting `Authorization: Bearer <this>`. Empty means `/metrics` returns aggregate counts only (no posture data). |

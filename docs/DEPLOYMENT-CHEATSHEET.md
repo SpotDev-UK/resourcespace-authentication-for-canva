@@ -24,7 +24,7 @@ For the full deployment narrative (Docker, systemd, container hosts) see
 | Canva client secret (base64) | Canva Developer Portal → your app → Verification keys |
 | Canva app id | Canva Developer Portal → your app → App details |
 | Redirect URI(s) Canva will use | Canva Developer Portal → Authentication → "Redirect URIs". Copy the exact strings. |
-| ResourceSpace tenant base URL | The hosted tenant URL, e.g. `https://your-tenant.resourcespace.com` |
+| ResourceSpace tenant base URL | The URL the customer normally uses, including custom domains and self-hosted instances |
 | Broker base URL | Whatever public HTTPS URL your hosting platform exposes for the broker |
 
 ## 3. Environment variables
@@ -49,8 +49,6 @@ production if any of the required ones are missing or unsafe.
 | `STORAGE_PATH` | A persistent path that survives restarts, e.g. `/var/lib/resourcespace-platform/platform-store.json` |
 | `STORAGE_ENCRYPTION_KEY` | Fernet key for encrypting sensitive store fields at rest. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `RESOURCE_SPACE_MODE` | `live` |
-| `RESOURCE_SPACE_ALLOWED_HOSTS` | Set to `.resourcespace.com` for the hosted rollout. This accepts canonical hosts such as `tenant.resourcespace.com` and nested hosts such as `spotdev.free.resourcespace.com`, but not lookalikes. The suffix is an approved routing boundary, not proof of who operates the hostname. |
-| `RESOURCE_SPACE_TENANTS_JSON` | Normally `[]`. Add an exact tenant object only when a customer's original ResourceSpace-provided hostname is unavailable or an instance needs a per-tenant override. |
 | `CLIENT_IP_HEADER` | Header carrying the original client IP for rate limits and SSO quotas. Defaults to `x-real-ip` outside development/test. Ignored unless the transport peer matches `TRUSTED_PROXY_HOSTS`. |
 | `TRUSTED_PROXY_HOSTS` | Comma-separated CIDRs/addresses of reverse proxies that may set `CLIENT_IP_HEADER`. Defaults to RFC1918+loopback+`100.64.0.0/10` outside development/test. Required when `CLIENT_IP_HEADER` is set. Uvicorn `proxy_headers` stays disabled. |
 
@@ -58,6 +56,8 @@ production if any of the required ones are missing or unsafe.
 
 | Var | Value |
 |---|---|
+| `RESOURCE_SPACE_ALLOWED_HOSTS` | Leave empty so any public HTTPS ResourceSpace URL works (custom domains and self-hosted included). Set only to lock the broker to known hostname suffixes. |
+| `RESOURCE_SPACE_TENANTS_JSON` | Leave empty unless an instance needs a per-tenant override such as an explicit `apiUrl`. |
 | `CANVA_UPLOAD_ALLOWED_HOSTS` | Host allowlist for the `source_url` Canva sends on upload. Capture from logs after the first upload, then tighten. |
 | `CANVA_UPLOAD_MAX_BYTES` | Cap on a single upload (default `52428800`, i.e. 50 MiB) |
 | `METRICS_TOKEN` | If set, `/metrics` returns the extended posture payload only to bearer-token callers |

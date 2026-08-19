@@ -38,7 +38,24 @@ from ._live_backend import (
 from ._upload import _upload_live_resource
 
 
-def _reject_private_tenant_sink(config: AppConfig, *urls: str | None) -> None:
+def _https_origin(host: str, port: int = 443) -> str:
+    """``https://`` origin for a canonical host, with IPv6 literals bracketed.
+
+    Non-default ports are preserved so a self-hosted instance on ``:8443``
+    keeps that port; ``:443`` is omitted as the HTTPS default.
+    """
+    try:
+        authority = f"[{host}]" if ipaddress.ip_address(host).version == 6 else host
+    except ValueError:
+        authority = host
+    if port == 443:
+        return f"https://{authority}"
+    return f"https://{authority}:{port}"
+
+
+def _reject_private_tenant_sink(
+    config: AppConfig, *urls: str | None, skip_fixture: bool = True
+) -> None:
     """Block SSRF to internal addresses for every host the broker will
     actually connect to (tenant base URL and the resolved API URL).
 
@@ -48,9 +65,11 @@ def _reject_private_tenant_sink(config: AppConfig, *urls: str | None) -> None:
     hosts, and fixture/dev flows use non-resolving demo hostnames, so gating on
     fixture avoids wrongly blocking them. Applies even to configured/allowlisted
     tenants (a mis-set or tampered tenant entry must not become an internal
-    request sink).
+    request sink). Pass ``skip_fixture=False`` for dynamically entered tenants
+    outside development/test, where fixture mode must not become an
+    open-redirect to a private or non-resolving URL.
     """
-    if config.resource_space.mode == "fixture":
+    if skip_fixture and config.resource_space.mode == "fixture":
         return
     for url in urls:
         if not url:
@@ -122,49 +141,59 @@ def get_configured_tenant(config: AppConfig, base_url: str | None) -> dict[str, 
     parsed = urlparse(normalized)
     host = requested_identity[1] if requested_identity is not None else ""
     allowed = config.resource_space.allowed_hosts
-    host_is_approved = bool(
-        host and any(_host_matches_pattern(host, pattern) for pattern in allowed)
-    )
-
-    # Development keeps its historical convenience of synthesizing any public
-    # tenant when no allowlist is configured. Outside development/test, an
-    # unregistered tenant is accepted only under an explicitly configured,
-    # approved ResourceSpace hostname suffix.
-    if not host_is_approved and (
-        config.environment not in DEV_LIKE_ENVIRONMENTS or allowed
-    ):
-        raise ResourceSpaceError(
-            "UNKNOWN_TENANT",
-            "This ResourceSpace URL is not in the broker tenant registry or approved hostname suffixes.",
-            403,
+    # Empty allowlist (the public-bridge default) means any public ResourceSpace
+    # URL: hosted tenants, custom domains, and self-hosted instances. A
+    # non-empty allowlist is an optional operator lock-down, not a required
+    # registry — the broker cannot know every ResourceSpace system. SSRF is
+    # enforced by the private-IP / HTTPS / no-credentials checks below.
+    if allowed:
+        host_is_approved = bool(
+            host and any(_host_matches_pattern(host, pattern) for pattern in allowed)
         )
+        if not host_is_approved:
+            raise ResourceSpaceError(
+                "UNKNOWN_TENANT",
+                "This ResourceSpace URL is not in the broker tenant registry or approved hostname suffixes.",
+                403,
+            )
 
     # Preserve the SSRF classification for private targets even when another
     # URL property is also invalid (for example an http:// RFC1918 literal).
-    _reject_private_tenant_sink(config, normalized)
+    # Exact registry records in fixture mode keep the skip: seeded demo
+    # hostnames often do not resolve. Dynamically entered URLs outside
+    # development/test must still fail closed, including production fixture.
+    _reject_private_tenant_sink(
+        config,
+        normalized,
+        skip_fixture=config.environment in DEV_LIKE_ENVIRONMENTS,
+    )
 
-    # Synthetic tenants cannot opt into alternate schemes, credentials, or
-    # ports. Exact registry records remain the explicit escape hatch for custom
-    # deployments; the hosted suffix path is deliberately HTTPS/443 only.
+    # Dynamically entered tenants cannot opt into HTTP or embedded credentials:
+    # session keys and passwords cross this connection. Any HTTPS port is
+    # accepted so self-hosted instances are not limited to 443. Port 0 is not a
+    # usable origin. Exact registry records remain the escape hatch for http://
+    # or other unusual schemes.
     if (
         requested_identity is None
         or requested_identity[0] != "https"
-        or requested_identity[2] != 443
+        or requested_identity[2] == 0
         or parsed.username is not None
         or parsed.password is not None
     ):
         raise ResourceSpaceError(
             "INVALID_TENANT_URL",
-            "Hosted ResourceSpace URLs must use HTTPS on the default port without credentials.",
+            "ResourceSpace URLs must use HTTPS without credentials.",
             400,
         )
 
-    resolved_base = f"https://{host}"
+    resolved_base = _https_origin(host, requested_identity[2])
     slug = _slugify(host)
+    if requested_identity[2] != 443:
+        slug = f"{slug}-{requested_identity[2]}"
     return {
         "id": f"tenant_{slug}",
         "slug": slug,
-        "name": host,
+        "name": resolved_base.removeprefix("https://"),
         "baseUrl": resolved_base,
         "apiUrl": _normalize_api_url(resolved_base, None),
         "rootCollections": [],

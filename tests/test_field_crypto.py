@@ -98,7 +98,7 @@ def test_validator_rejects_malformed_storage_encryption_key() -> None:
     assert "STORAGE_ENCRYPTION_KEY" in str(info.value)
 
 
-def test_validator_rejects_production_without_tenant_trust_configuration() -> None:
+def test_validator_allows_production_without_tenant_allowlist() -> None:
     config = create_config(
         {
             "APP_ENV": "production",
@@ -111,8 +111,4 @@ def test_validator_rejects_production_without_tenant_trust_configuration() -> No
             "STORAGE_ENCRYPTION_KEY": Fernet.generate_key().decode(),
         }
     )
-    with pytest.raises(ConfigValidationError) as info:
-        validate_config_for_environment(config)
-    message = str(info.value)
-    assert "RESOURCE_SPACE_TENANTS_JSON" in message
-    assert "RESOURCE_SPACE_ALLOWED_HOSTS" in message
+    validate_config_for_environment(config)

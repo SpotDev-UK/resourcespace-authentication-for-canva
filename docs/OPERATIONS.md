@@ -20,9 +20,9 @@ quick-start version see [Deployment Cheatsheet](./DEPLOYMENT-CHEATSHEET.md).
 
 - `APP_ENV=production` — startup validator enforced
 - `RESOURCE_SPACE_MODE=live`
-- At least one ResourceSpace tenant routing source configured:
-  `RESOURCE_SPACE_ALLOWED_HOSTS=.resourcespace.com` for canonical hosted
-  hostnames and/or `RESOURCE_SPACE_TENANTS_JSON` for exact exceptions
+- Users enter their ResourceSpace URL in the OAuth popup (custom domains
+  and self-hosted instances included). Leave `RESOURCE_SPACE_ALLOWED_HOSTS`
+  empty unless you deliberately want to lock the broker to known suffixes.
 - `CANVA_REQUEST_VERIFICATION_MODE=required`
 - `OAUTH_REDIRECT_URI_ALLOWLIST` populated with the exact redirect URIs
   Canva uses
@@ -51,17 +51,17 @@ non-default value:
 - `CANVA_CLIENT_SECRET`
 - `CANVA_REQUEST_VERIFICATION_MODE` (must equal `required`)
 - `RESOURCE_SPACE_MODE`
-- At least one of `RESOURCE_SPACE_ALLOWED_HOSTS` or
-  `RESOURCE_SPACE_TENANTS_JSON`
 
-Set `RESOURCE_SPACE_ALLOWED_HOSTS=.resourcespace.com` for the hosted rollout.
-This accepts canonical hosts such as `tenant.resourcespace.com` and nested
-hosts such as `spotdev.free.resourcespace.com`, but not lookalikes. Customers
-should enter their original ResourceSpace-provided hostname even if they
-normally use a custom domain. Use `RESOURCE_SPACE_TENANTS_JSON` only when that
-original hostname is unavailable or an instance needs an override such as an
-explicit `apiUrl`. The suffix is an approved broker routing boundary, not
-proof of who operates a hostname.
+Leave `RESOURCE_SPACE_ALLOWED_HOSTS` empty so any public HTTPS ResourceSpace
+URL works (hosted tenants, custom domains, and self-hosted instances). Set
+it only if you deliberately want to lock the broker to known hostname
+suffixes. Use `RESOURCE_SPACE_TENANTS_JSON` only for per-tenant overrides
+such as an explicit `apiUrl`.
+
+Dynamically entered tenant URLs must use HTTPS without embedded credentials,
+public DNS, and a same-origin API URL. Non-default HTTPS ports are preserved. Private, loopback, link-local, reserved, multicast,
+CGNAT/shared (`100.64.0.0/10`), IPv6 site-local, and non-resolving hosts
+are rejected.
 
 Tunables and recommended optionals (timestamps, rate limits, upload caps,
 SSO handoff timings, asset-proxy caps, refresh-token lifetime, metrics
@@ -76,23 +76,23 @@ Configure the Canva OAuth provider to use:
 - Revocation endpoint: `<broker-base-url>/oauth/revoke`
 - Userinfo endpoint: `<broker-base-url>/oauth/userinfo`
 
-The OAuth popup is intentionally outside the Canva iframe. Users supply:
+The OAuth popup is intentionally outside the Canva iframe. Users supply
+their ResourceSpace base URL (the address they normally use). When SSO is
+off they also supply a username and password.
 
-- The ResourceSpace base URL
-- Username
-- Password
-
-The broker accepts the tenant URL only when it matches an exact
-`RESOURCE_SPACE_TENANTS_JSON` entry or an approved
-`RESOURCE_SPACE_ALLOWED_HOSTS` suffix, authenticates against that exact
-ResourceSpace instance, then returns an authorisation code to Canva.
+The broker accepts any public HTTPS ResourceSpace URL. If
+`RESOURCE_SPACE_ALLOWED_HOSTS` is set, unknown hosts that match neither that
+suffix list nor an exact `RESOURCE_SPACE_TENANTS_JSON` record are rejected.
+It then authenticates against that exact ResourceSpace instance and returns
+an authorisation code to Canva.
 
 In live mode, tenant resolution also refuses any tenant URL that resolves to
 a private, loopback, link-local, reserved, multicast, CGNAT/shared
 (`100.64.0.0/10`), IPv6 site-local, or otherwise non-globally-routable
 address, and fails closed on hosts that do not resolve at all (SSRF
-protection). This check applies to both exact tenant records and approved-suffix
-tenants, so a mis-set or tampered configuration cannot turn the broker into an
+protection). This check applies to every tenant the broker will call,
+including exact registry records and dynamically entered URLs, so a
+mis-set or tampered configuration cannot turn the broker into an
 internal request sink.
 
 Every outbound fetch to a tenant (the login POST, the signed session-key
@@ -386,7 +386,7 @@ The marker is intentionally **not** applied to Canva export URL downloads in
 `_download_bytes`, because those URLs are supplied by Canva during the
 upload flow and are not ResourceSpace API traffic.
 
-Keep tenant allowlisting, OAuth bearer-token checks, ResourceSpace permission
+Keep tenant URL SSRF guards, OAuth bearer-token checks, ResourceSpace permission
 checks, CORS controls, rate limits, and request signing in place. Treat the
 marker as a routing/auditing signal only. Do not log full signed
 ResourceSpace URLs, session keys, download grants, OAuth tokens, or POST
@@ -491,8 +491,9 @@ self-heal as tokens rotate.
 ## Failure Modes
 
 - `INVALID_TENANT_URL`: malformed tenant URL entered in the OAuth popup
-- `UNKNOWN_TENANT`: tenant URL matches neither an exact tenant record nor a
-  configured hostname suffix
+- `UNKNOWN_TENANT`: tenant URL was rejected by an optional
+  `RESOURCE_SPACE_ALLOWED_HOSTS` suffix list (or, in fixture mode, is not a
+  seeded demo tenant)
 - `INVALID_CREDENTIALS`: ResourceSpace login failed
 - `INVALID_CLIENT`: presented `client_id` is not in the broker's configured
   OAuth client registry
@@ -508,18 +509,20 @@ self-heal as tokens rotate.
 ## Release Checklist
 
 - Set `RESOURCE_SPACE_MODE=live`
-- Set `RESOURCE_SPACE_ALLOWED_HOSTS=.resourcespace.com`
-- Set `RESOURCE_SPACE_TENANTS_JSON=[]`, adding exact entries only for instances
-  whose original ResourceSpace-provided hostname is unavailable or needs an
-  override
+- Leave `RESOURCE_SPACE_ALLOWED_HOSTS` empty so custom domains and
+  self-hosted instances work. Set it only to lock the broker to known
+  hostname suffixes.
+- Leave `RESOURCE_SPACE_TENANTS_JSON=[]` unless an instance needs an
+  override such as an explicit `apiUrl`
 - Set `CANVA_CLIENT_SECRET`, `OAUTH_CLIENT_ID`,
   `OAUTH_REDIRECT_URI_ALLOWLIST`, `CORS_ORIGIN`
 - Leave `OAUTH_CLIENTS_JSON` unset unless the broker is intentionally serving
   additional integrations; if set, verify each client's redirect allowlist is
   client-specific
 - Leave `RESOURCE_SPACE_SSO_ENABLED=false` until live browser SSO UAT passes
-  (303 redirect, unchanged `state`, working session) and ResourceSpace SSO
-  redirect patch is confirmed on the tenant (re-check after RS upgrades).
+  (303 redirect, unchanged `state`, working session) and Dan's ResourceSpace SSO
+  redirect patch is confirmed on the tenant (re-check after RS upgrades); see
+  the deployment runbook
 - If enabling SSO, confirm distinct `resolvedClientHostHash` values in
   `oauth_sso_initiated` from two end-user networks and stable callback source
   identity in `oauth_sso_callback_received` (see Deployment runbook) and review
